@@ -20,7 +20,7 @@ const tools: Array<{ tool: Tool; label: string }> = [
   { tool: 'arrow', label: 'Arrow' },
   { tool: 'rectangle', label: 'Rectangle' },
   { tool: 'text', label: 'Text' },
-  { tool: 'callout', label: 'Callout' },
+  { tool: 'callout', label: 'Step' },
   { tool: 'blur', label: 'Blur' },
 ];
 

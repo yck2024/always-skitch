@@ -6,6 +6,7 @@ import {
   FabricObject,
   Group,
   Line,
+  Polygon,
   Rect,
   Text,
   Shadow,
@@ -79,35 +80,39 @@ function makeBackground(image: FabricImage) {
 }
 
 function makeArrow(scale: number, startX: number, startY: number, endX: number, endY: number) {
+  // Skitch-style tapered arrow: a single polygon with a pointy tail, narrow
+  // body, and a wide triangular head. Points are pre-rotated so we don't have
+  // to fight Fabric's bbox-rotation pivot.
   const dx = endX - startX;
   const dy = endY - startY;
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
-  const line = new Line([0, 0, dx, dy], {
-    stroke: SKITCH_RED,
-    strokeWidth: STROKE_WIDTH * scale,
-    strokeLineCap: 'round',
-    strokeLineJoin: 'round',
-    selectable: false,
-    evented: false,
+  const length = Math.hypot(dx, dy);
+  const radians = Math.atan2(dy, dx);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const rotate = (x: number, y: number) => ({
+    x: startX + x * cos - y * sin,
+    y: startY + x * sin + y * cos,
   });
-  const head = new Triangle({
-    left: dx,
-    top: dy,
-    width: 34 * scale,
-    height: 42 * scale,
+  // Head occupies ~30% of the length, clamped so short arrows still have a
+  // visible head and long arrows don't get cartoonishly big ones.
+  const headLen = Math.min(Math.max(length * 0.3, 24 * scale), 110 * scale);
+  const headHalf = headLen * 0.55;
+  const bodyHalf = Math.max(headHalf * 0.15, 3 * scale);
+  const bodyEnd = Math.max(0, length - headLen);
+  const points = [
+    rotate(0, 0),                       // tail tip
+    rotate(bodyEnd, bodyHalf),          // body upper end
+    rotate(bodyEnd, headHalf),          // head upper base
+    rotate(length, 0),                  // arrow tip
+    rotate(bodyEnd, -headHalf),         // head lower base
+    rotate(bodyEnd, -bodyHalf),         // body lower end
+  ];
+  const polygon = new Polygon(points, {
     fill: SKITCH_RED,
-    angle,
-    originX: 'center',
-    originY: 'center',
-    selectable: false,
-    evented: false,
+    strokeLineJoin: 'round',
   });
-  const group = new Group([line, head], {
-    left: startX,
-    top: startY,
-  });
-  group.set('data', { kind: 'arrow' });
-  return group;
+  polygon.set('data', { kind: 'arrow' });
+  return polygon;
 }
 
 function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: number, endX: number, endY: number) {
@@ -254,14 +259,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const annotationScale = () => 1 / Math.max(displayScaleRef.current, 0.25);
 
     const addFinalObject = (object: FabricObject) => {
-      // Drag tools (rectangle/arrow/blur) are sticky so the user can draw a
-      // run of them; the finalized object also stays non-interactive so the
-      // next drag doesn't grab the previous one. Click tools (text/callout)
-      // stay one-shot — making a Textbox non-evented would break edit mode.
-      const sticky =
-        activeToolRef.current === 'rectangle' ||
-        activeToolRef.current === 'arrow' ||
-        activeToolRef.current === 'blur';
+      // Every drawing tool is sticky: stay on the tool, and keep finalized
+      // objects non-interactive so the next click/drag starts a new annotation
+      // instead of grabbing the previous one. Fabric IText edit mode uses a
+      // hidden textarea that ignores the object's `evented` flag, so text
+      // still types and click-outside-to-exit still fires from the canvas.
+      const sticky = activeToolRef.current !== 'select';
       object.selectable = !sticky;
       object.evented = !sticky;
       if (!canvas.contains(object)) {
