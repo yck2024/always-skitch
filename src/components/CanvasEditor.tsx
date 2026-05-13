@@ -16,6 +16,12 @@ import {
 import type { Tool } from '../types';
 import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
 
+// Fabric v7 changed the default origin to 'center'; this app's positioning math
+// (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
+// assumes 'left'/'top'. Restore the v6 default globally.
+FabricObject.ownDefaults.originX = 'left';
+FabricObject.ownDefaults.originY = 'top';
+
 // Annotation style constants: intentionally bold, red, and Skitch-like.
 const SKITCH_RED = '#ff2a1a';
 const STROKE_WIDTH = 8;
@@ -186,6 +192,24 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const historyIndexRef = useRef(0);
   const restoringRef = useRef(false);
   const calloutNumberRef = useRef(1);
+  const displayScaleRef = useRef(1);
+
+  const fitCanvasToViewport = () => {
+    const canvas = canvasRef.current;
+    const element = backgroundElementRef.current;
+    if (!canvas || !element) return;
+    const naturalWidth = element.naturalWidth;
+    const naturalHeight = element.naturalHeight;
+    if (!naturalWidth || !naturalHeight) return;
+    // Keep these aligned with .canvas-wrap.visible max-width/max-height in styles.css.
+    const maxWidth = Math.max(1, window.innerWidth - 64);
+    const maxHeight = Math.max(1, window.innerHeight - 150);
+    const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+    displayScaleRef.current = scale;
+    canvas.setDimensions({ width: naturalWidth * scale, height: naturalHeight * scale });
+    canvas.setZoom(scale);
+    canvas.requestRenderAll();
+  };
 
   useEffect(() => {
     activeToolRef.current = activeTool;
@@ -223,13 +247,22 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     };
 
     const addFinalObject = (object: FabricObject) => {
-      object.selectable = true;
-      object.evented = true;
-      canvas.add(object);
-      canvas.setActiveObject(object);
+      const sticky = activeToolRef.current === 'rectangle';
+      // Keep interactivity in sync with the current tool so a finalized rectangle
+      // doesn't intercept the next click while sticky-rectangle stays active.
+      object.selectable = !sticky;
+      object.evented = !sticky;
+      if (!canvas.contains(object)) {
+        canvas.add(object);
+      }
+      if (!sticky) {
+        canvas.setActiveObject(object);
+      }
       canvas.requestRenderAll();
       saveHistory();
-      onToolChange('select');
+      if (!sticky) {
+        onToolChange('select');
+      }
     };
 
     type CanvasPointerEvent = Parameters<typeof canvas.getScenePoint>[0];
@@ -387,9 +420,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       backgroundElementRef.current = element;
       calloutNumberRef.current = 1;
       currentCanvas.clear();
-      currentCanvas.setDimensions({ width: image.width ?? element.naturalWidth, height: image.height ?? element.naturalHeight });
       currentCanvas.add(makeBackground(image));
       currentCanvas.sendObjectToBack(image);
+      fitCanvasToViewport();
       historyRef.current = ['[]'];
       historyIndexRef.current = 0;
       onHistoryChange(false, false);
@@ -402,6 +435,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       cancelled = true;
     };
   }, [imageDataUrl, onHistoryChange, onImageLoaded, onToast]);
+
+  useEffect(() => {
+    const handleResize = () => fitCanvasToViewport();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const restoreHistory = async (state: HistoryState) => {
     const canvas = canvasRef.current;
@@ -422,8 +461,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     if (!canvas) return null;
     canvas.discardActiveObject();
     canvas.requestRenderAll();
-    // Canvas export uses the backing Fabric canvas size, preserving original image resolution.
-    return canvas.toDataURL({ format: 'png', multiplier: 1 });
+    // Invert the fit-to-viewport scale so the exported PNG keeps the source image's natural resolution.
+    const multiplier = displayScaleRef.current > 0 ? 1 / displayScaleRef.current : 1;
+    return canvas.toDataURL({ format: 'png', multiplier });
   };
 
   useImperativeHandle(ref, () => ({

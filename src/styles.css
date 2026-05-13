@@ -214,12 +214,3 @@ button.primary {
   }
 }
 
-.canvas-wrap.visible .canvas-container {
-  max-width: calc(100vw - 4rem) !important;
-  max-height: calc(100vh - 150px) !important;
-}
-
-.canvas-wrap.visible canvas {
-  max-width: 100% !important;
-  height: auto !important;
-}

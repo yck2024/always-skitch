@@ -6,7 +6,7 @@ import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from './
 
 export default function App() {
   const editorRef = useRef<CanvasEditorHandle | null>(null);
-  const [activeTool, setActiveTool] = useState<Tool>('select');
+  const [activeTool, setActiveTool] = useState<Tool>('rectangle');
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [hasImage, setHasImage] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -58,6 +58,8 @@ export default function App() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey;
+      const target = event.target as HTMLElement | null;
+      const isEditingText = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable;
       if (meta && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         if (event.shiftKey) {
@@ -65,9 +67,10 @@ export default function App() {
         } else {
           editorRef.current?.undo();
         }
+      } else if (meta && event.key.toLowerCase() === 'c' && !isEditingText && hasImage) {
+        event.preventDefault();
+        void editorRef.current?.copyPng();
       } else if (event.key === 'Backspace' || event.key === 'Delete') {
-        const target = event.target as HTMLElement | null;
-        const isEditingText = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable;
         if (!isEditingText) {
           event.preventDefault();
           editorRef.current?.deleteSelected();
@@ -83,7 +86,7 @@ export default function App() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [loadImageFile]);
+  }, [loadImageFile, hasImage]);
 
   return (
     <div className="app">
