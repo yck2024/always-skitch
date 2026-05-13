@@ -32,11 +32,16 @@ export default function App() {
         showToast('No image found on the clipboard.', 'warning');
         return;
       }
+      if (hasImage) {
+        const ok = window.confirm(
+          'Replace the current image? Annotations on it will be lost. Use Copy PNG or Download first if you want to keep them.',
+        );
+        if (!ok) return;
+      }
       const dataUrl = await fileToDataUrl(file);
       setImageDataUrl(dataUrl);
-      setActiveTool('select');
     },
-    [showToast],
+    [hasImage, showToast],
   );
 
   const handlePasteButton = useCallback(async () => {

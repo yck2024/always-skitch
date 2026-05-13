@@ -78,13 +78,13 @@ function makeBackground(image: FabricImage) {
   return image;
 }
 
-function makeArrow(startX: number, startY: number, endX: number, endY: number) {
+function makeArrow(scale: number, startX: number, startY: number, endX: number, endY: number) {
   const dx = endX - startX;
   const dy = endY - startY;
   const angle = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
   const line = new Line([0, 0, dx, dy], {
     stroke: SKITCH_RED,
-    strokeWidth: STROKE_WIDTH,
+    strokeWidth: STROKE_WIDTH * scale,
     strokeLineCap: 'round',
     strokeLineJoin: 'round',
     selectable: false,
@@ -93,8 +93,8 @@ function makeArrow(startX: number, startY: number, endX: number, endY: number) {
   const head = new Triangle({
     left: dx,
     top: dy,
-    width: 34,
-    height: 42,
+    width: 34 * scale,
+    height: 42 * scale,
     fill: SKITCH_RED,
     angle,
     originX: 'center',
@@ -117,44 +117,45 @@ function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: 
   head.set({ left: endX, top: endY, angle: (Math.atan2(dy, dx) * 180) / Math.PI + 90 });
 }
 
-function makeText(left: number, top: number) {
+function makeText(scale: number, left: number, top: number) {
   return new Textbox('Text', {
     left,
     top,
-    width: 260,
+    width: 260 * scale,
     fill: SKITCH_RED,
     stroke: '#ffffff',
-    strokeWidth: 2.5,
+    strokeWidth: 2.5 * scale,
     paintFirst: 'stroke',
-    shadow: new Shadow({ color: 'rgba(0,0,0,0.35)', offsetX: 2, offsetY: 2, blur: 3 }),
+    shadow: new Shadow({ color: 'rgba(0,0,0,0.35)', offsetX: 2 * scale, offsetY: 2 * scale, blur: 3 * scale }),
     fontFamily: FONT_FAMILY,
-    fontSize: FONT_SIZE,
+    fontSize: FONT_SIZE * scale,
     fontWeight: 900,
     editable: true,
     data: { kind: 'text' },
   });
 }
 
-function makeCallout(left: number, top: number, number: number) {
+function makeCallout(scale: number, left: number, top: number, number: number) {
+  const size = CALLOUT_SIZE * scale;
   const circle = new Circle({
-    radius: CALLOUT_SIZE / 2,
+    radius: size / 2,
     fill: SKITCH_RED,
     stroke: '#ffffff',
-    strokeWidth: 3,
+    strokeWidth: 3 * scale,
     originX: 'center',
     originY: 'center',
   });
   const label = new Text(String(number), {
     fill: '#ffffff',
     fontFamily: FONT_FAMILY,
-    fontSize: 24,
+    fontSize: 24 * scale,
     fontWeight: 900,
     originX: 'center',
     originY: 'center',
   });
   const group = new Group([circle, label], {
-    left: left - CALLOUT_SIZE / 2,
-    top: top - CALLOUT_SIZE / 2,
+    left: left - size / 2,
+    top: top - size / 2,
   });
   group.set('data', { kind: 'callout' });
   return group;
@@ -246,10 +247,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
     };
 
+    const annotationScale = () => 1 / Math.max(displayScaleRef.current, 0.25);
+
     const addFinalObject = (object: FabricObject) => {
-      const sticky = activeToolRef.current === 'rectangle';
-      // Keep interactivity in sync with the current tool so a finalized rectangle
-      // doesn't intercept the next click while sticky-rectangle stays active.
+      // Drag tools (rectangle/arrow/blur) are sticky so the user can draw a
+      // run of them; the finalized object also stays non-interactive so the
+      // next drag doesn't grab the previous one. Click tools (text/callout)
+      // stay one-shot — making a Textbox non-evented would break edit mode.
+      const sticky =
+        activeToolRef.current === 'rectangle' ||
+        activeToolRef.current === 'arrow' ||
+        activeToolRef.current === 'blur';
       object.selectable = !sticky;
       object.evented = !sticky;
       if (!canvas.contains(object)) {
@@ -271,6 +279,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
       if (!backgroundElementRef.current || activeToolRef.current === 'select') return;
       const pointer = pointerFromEvent(event);
+      const scale = annotationScale();
 
       if (activeToolRef.current === 'rectangle') {
         const rect = new Rect({
@@ -280,9 +289,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           height: 1,
           fill: 'transparent',
           stroke: SKITCH_RED,
-          strokeWidth: STROKE_WIDTH,
-          rx: 5,
-          ry: 5,
+          strokeWidth: STROKE_WIDTH * scale,
+          rx: 5 * scale,
+          ry: 5 * scale,
           data: { kind: 'rectangle' },
         });
         canvas.add(rect);
@@ -290,7 +299,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       } else if (activeToolRef.current === 'arrow') {
         const line = new Line([pointer.x, pointer.y, pointer.x, pointer.y], {
           stroke: SKITCH_RED,
-          strokeWidth: STROKE_WIDTH,
+          strokeWidth: STROKE_WIDTH * scale,
           strokeLineCap: 'round',
           selectable: false,
           evented: false,
@@ -298,8 +307,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         const head = new Triangle({
           left: pointer.x,
           top: pointer.y,
-          width: 34,
-          height: 42,
+          width: 34 * scale,
+          height: 42 * scale,
           fill: SKITCH_RED,
           originX: 'center',
           originY: 'center',
@@ -316,8 +325,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           height: 1,
           fill: 'rgba(255, 42, 26, 0.08)',
           stroke: SKITCH_RED,
-          strokeDashArray: [12, 8],
-          strokeWidth: 3,
+          strokeDashArray: [12 * scale, 8 * scale],
+          strokeWidth: 3 * scale,
           data: { kind: 'blur-preview' },
         });
         canvas.add(rect);
@@ -357,7 +366,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       } else if (drawing.kind === 'arrow') {
         canvas.remove(drawing.line, drawing.head);
         if (Math.hypot(pointer.x - drawing.startX, pointer.y - drawing.startY) > 10) {
-          addFinalObject(makeArrow(drawing.startX, drawing.startY, pointer.x, pointer.y));
+          addFinalObject(makeArrow(annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y));
         }
       } else {
         canvas.remove(drawing.object);
@@ -378,13 +387,14 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const handleCanvasClick = (event: { e: CanvasPointerEvent }) => {
       if (!backgroundElementRef.current) return;
       const pointer = pointerFromEvent(event);
+      const scale = annotationScale();
       if (activeToolRef.current === 'text') {
-        const text = makeText(pointer.x, pointer.y);
+        const text = makeText(scale, pointer.x, pointer.y);
         addFinalObject(text);
         text.enterEditing();
         text.selectAll();
       } else if (activeToolRef.current === 'callout') {
-        addFinalObject(makeCallout(pointer.x, pointer.y, calloutNumberRef.current++));
+        addFinalObject(makeCallout(scale, pointer.x, pointer.y, calloutNumberRef.current++));
       }
     };
 
