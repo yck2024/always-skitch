@@ -231,9 +231,13 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   useEffect(() => {
     if (!canvasElRef.current) return;
 
+    // Seed selection from the current tool. The [activeTool] sync effect runs
+    // before this one on mount, so if we hardcode `selection: true` here a
+    // non-select initial tool would leave Fabric's group-selection marquee
+    // active until the user toggles tools.
     const canvas = new Canvas(canvasElRef.current, {
       preserveObjectStacking: true,
-      selection: true,
+      selection: activeToolRef.current === 'select',
     });
     canvasRef.current = canvas;
 
