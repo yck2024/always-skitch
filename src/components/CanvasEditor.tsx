@@ -93,11 +93,14 @@ function makeArrow(scale: number, startX: number, startY: number, endX: number, 
     x: startX + x * cos - y * sin,
     y: startY + x * sin + y * cos,
   });
-  // Head occupies ~30% of the length, clamped so short arrows still have a
-  // visible head and long arrows don't get cartoonishly big ones.
-  const headLen = Math.min(Math.max(length * 0.3, 24 * scale), 110 * scale);
-  const headHalf = headLen * 0.55;
-  const bodyHalf = Math.max(headHalf * 0.15, 3 * scale);
+  // Head occupies ~22% of the length, with absolute min/max bounds for very
+  // short/long arrows AND a hard cap at 40% so the head never dominates a
+  // short arrow visually. Head is slightly narrower than long for a pointy
+  // Skitch silhouette, and the body is thick enough to be clearly visible.
+  const rawHeadLen = Math.min(Math.max(length * 0.22, 24 * scale), 80 * scale);
+  const headLen = Math.min(rawHeadLen, length * 0.4);
+  const headHalf = headLen * 0.42;
+  const bodyHalf = Math.max(headHalf * 0.32, 4 * scale);
   const bodyEnd = Math.max(0, length - headLen);
   const points = [
     rotate(0, 0),                       // tail tip
