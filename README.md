@@ -48,6 +48,9 @@ https://yck2024.github.io/always-skitch/
 ```
 
 The recommended deployment is GitHub Actions. The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
+This app uses Vite with `base: './'`, so the built assets work from a repository subpath on GitHub Pages.
+
+The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
 
 1. Push this repository to GitHub.
 2. In GitHub, open **Settings → Pages**.
