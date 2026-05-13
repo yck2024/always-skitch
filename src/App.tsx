@@ -65,14 +65,15 @@ export default function App() {
       const meta = event.metaKey || event.ctrlKey;
       const target = event.target as HTMLElement | null;
       const isEditingText = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable;
-      if (meta && event.key.toLowerCase() === 'z') {
+      const key = event.key.toLowerCase();
+      if (meta && key === 'z') {
         event.preventDefault();
         if (event.shiftKey) {
           editorRef.current?.redo();
         } else {
           editorRef.current?.undo();
         }
-      } else if (meta && event.key.toLowerCase() === 'c' && !isEditingText && hasImage) {
+      } else if (meta && key === 'c' && !isEditingText && hasImage) {
         event.preventDefault();
         void editorRef.current?.copyPng();
       } else if (event.key === 'Backspace' || event.key === 'Delete') {
@@ -82,6 +83,39 @@ export default function App() {
         }
       } else if (event.key === 'Escape') {
         setActiveTool('select');
+      } else if (!meta && !isEditingText) {
+        // Single-key tool / action shortcuts, Photoshop/Figma style.
+        if (key === 'v') {
+          event.preventDefault();
+          setActiveTool('select');
+        } else if (key === 'a') {
+          event.preventDefault();
+          setActiveTool('arrow');
+        } else if (key === 'r') {
+          event.preventDefault();
+          setActiveTool('rectangle');
+        } else if (key === 't') {
+          event.preventDefault();
+          setActiveTool('text');
+        } else if (key === 's') {
+          event.preventDefault();
+          setActiveTool('callout');
+        } else if (key === 'b') {
+          event.preventDefault();
+          setActiveTool('blur');
+        } else if (key === 'u') {
+          event.preventDefault();
+          if (event.shiftKey) editorRef.current?.redo();
+          else editorRef.current?.undo();
+        } else if (key === 'd') {
+          event.preventDefault();
+          editorRef.current?.deleteSelected();
+        } else if (key === 'c') {
+          event.preventDefault();
+          if (hasImage && window.confirm('Clear all annotations? This cannot be reversed except via Undo.')) {
+            editorRef.current?.clearAnnotations();
+          }
+        }
       }
     };
 

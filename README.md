@@ -12,6 +12,36 @@ Mini Skitch is a static, browser-only image annotation app for quick screenshot 
 
 Everything happens locally in the browser. The built app is only static HTML, CSS, and JavaScript, so it can be hosted directly on GitHub Pages. There is no backend, login, analytics, cloud upload, server-side storage, or screenshot-capture service.
 
+## Keyboard shortcuts
+
+Single-letter shortcuts fire when you're not editing a text annotation. They follow the Photoshop / Figma convention.
+
+| Key | Action |
+| --- | --- |
+| `V` | Select tool |
+| `A` | Arrow |
+| `R` | Rectangle |
+| `T` | Text |
+| `S` | Step (numbered callout) |
+| `B` | Blur |
+| `U` | Undo |
+| `Shift+U` | Redo |
+| `D` | Delete the selected annotation |
+| `C` | Clear all annotations (asks first) |
+| `Esc` | Switch back to Select tool |
+| `Backspace` / `Delete` | Delete the selected annotation |
+
+Standard editing shortcuts still work:
+
+| Key | Action |
+| --- | --- |
+| `Cmd+V` / `Ctrl+V` | Paste an image from the clipboard |
+| `Cmd+C` / `Ctrl+C` | Copy the annotated PNG to the clipboard |
+| `Cmd+Z` / `Ctrl+Z` | Undo |
+| `Cmd+Shift+Z` / `Ctrl+Shift+Z` | Redo |
+
+While a drawing tool is sticky (Rectangle, Arrow, Blur, Text, Step), clicking on an existing annotation auto-switches to Select and picks it up instead of creating a new annotation on top.
+
 ## Run locally
 
 ```bash

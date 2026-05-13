@@ -289,6 +289,23 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
       if (!backgroundElementRef.current || activeToolRef.current === 'select') return;
       const pointer = pointerFromEvent(event);
+
+      // If the click landed on an existing annotation, escape sticky mode:
+      // switch to Select and pick the object up instead of stacking a new
+      // annotation on top. Annotations are evented=false while a drawing tool
+      // is active, so Fabric's own hit-test won't see them — we walk them
+      // manually with containsPoint().
+      const hit = annotationObjects(canvas).find((object) => object.containsPoint(pointer));
+      if (hit) {
+        activeToolRef.current = 'select';
+        hit.selectable = true;
+        hit.evented = true;
+        canvas.setActiveObject(hit);
+        canvas.requestRenderAll();
+        onToolChange('select');
+        return;
+      }
+
       const scale = annotationScale();
 
       if (activeToolRef.current === 'rectangle') {
