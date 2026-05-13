@@ -13,6 +13,7 @@ interface ToolbarProps {
   onClear: () => void;
   onCopy: () => void;
   onDownload: () => void;
+  onShowShortcuts: () => void;
 }
 
 const tools: Array<{ tool: Tool; label: string }> = [
@@ -37,6 +38,7 @@ export function Toolbar({
   onClear,
   onCopy,
   onDownload,
+  onShowShortcuts,
 }: ToolbarProps) {
   return (
     <header className="toolbar" aria-label="Mini Skitch toolbar">
@@ -77,6 +79,9 @@ export function Toolbar({
         </button>
         <button type="button" disabled={!hasImage} onClick={onClear}>
           Clear annotations
+        </button>
+        <button type="button" onClick={onShowShortcuts} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
+          Shortcuts
         </button>
       </div>
 

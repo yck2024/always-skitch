@@ -12,6 +12,7 @@ export default function App() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -66,6 +67,19 @@ export default function App() {
       const target = event.target as HTMLElement | null;
       const isEditingText = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable;
       const key = event.key.toLowerCase();
+      // While the shortcuts modal is open, only Esc (close) is handled here.
+      if (showShortcuts) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setShowShortcuts(false);
+        }
+        return;
+      }
+      if (event.key === '?' && !isEditingText) {
+        event.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
       if (meta && key === 'z') {
         event.preventDefault();
         if (event.shiftKey) {
@@ -125,7 +139,7 @@ export default function App() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [loadImageFile, hasImage]);
+  }, [loadImageFile, hasImage, showShortcuts]);
 
   return (
     <div className="app">
@@ -142,6 +156,7 @@ export default function App() {
         onClear={() => editorRef.current?.clearAnnotations()}
         onCopy={() => void editorRef.current?.copyPng()}
         onDownload={() => editorRef.current?.downloadPng()}
+        onShowShortcuts={() => setShowShortcuts(true)}
       />
 
       <main className="workspace">
@@ -163,6 +178,89 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
     </div>
+  );
+}
+
+const TOOL_SHORTCUTS: Array<[string, string]> = [
+  ['V', 'Select'],
+  ['A', 'Arrow'],
+  ['R', 'Rectangle'],
+  ['T', 'Text'],
+  ['S', 'Step'],
+  ['B', 'Blur'],
+];
+
+const ACTION_SHORTCUTS: Array<[string, string]> = [
+  ['U', 'Undo'],
+  ['Shift + U', 'Redo'],
+  ['D', 'Delete selected'],
+  ['C', 'Clear annotations (confirms first)'],
+  ['Esc', 'Switch to Select'],
+  ['?', 'Open this shortcut list'],
+];
+
+const COMBO_SHORTCUTS: Array<[string, string]> = [
+  ['Cmd / Ctrl + V', 'Paste an image'],
+  ['Cmd / Ctrl + C', 'Copy annotated PNG'],
+  ['Cmd / Ctrl + Z', 'Undo'],
+  ['Cmd / Ctrl + Shift + Z', 'Redo'],
+  ['Backspace / Delete', 'Delete selected'],
+];
+
+function ShortcutsModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="modal-header">
+          <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="Close shortcuts">
+            ×
+          </button>
+        </header>
+        <div className="modal-body">
+          <ShortcutSection title="Tools" rows={TOOL_SHORTCUTS} />
+          <ShortcutSection title="Actions" rows={ACTION_SHORTCUTS} />
+          <ShortcutSection title="With modifier" rows={COMBO_SHORTCUTS} />
+          <p className="modal-footnote">
+            Single-letter shortcuts are ignored while editing text. Clicking on an existing annotation
+            while a drawing tool is active escapes back to Select and picks it up.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShortcutSection({ title, rows }: { title: string; rows: Array<[string, string]> }) {
+  return (
+    <section>
+      <h3 className="modal-section-title">{title}</h3>
+      <table>
+        <tbody>
+          {rows.map(([key, action]) => (
+            <tr key={`${title}-${key}`}>
+              <td className="key">
+                {key.split(' + ').map((part, index, all) => (
+                  <span key={part}>
+                    <kbd>{part}</kbd>
+                    {index < all.length - 1 ? ' + ' : null}
+                  </span>
+                ))}
+              </td>
+              <td>{action}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }

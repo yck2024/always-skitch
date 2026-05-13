@@ -196,6 +196,102 @@ button.primary {
   background: #9a3412;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(20, 28, 40, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 30px 60px rgba(20, 28, 40, 0.35);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #eef0f3;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.modal-close {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 1.25rem;
+  line-height: 1;
+  border-radius: 999px;
+}
+
+.modal-body {
+  padding: 0.5rem 1.5rem 1.5rem;
+}
+
+.modal-section-title {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6a737d;
+}
+
+.modal-body table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.modal-body td {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid #f1f3f5;
+  vertical-align: middle;
+}
+
+.modal-body tr:last-child td {
+  border-bottom: none;
+}
+
+.modal-body td.key {
+  width: 45%;
+  white-space: nowrap;
+}
+
+.modal-body kbd {
+  display: inline-block;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid #d3d8df;
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: #f7f8fa;
+  color: #34383e;
+}
+
+.modal-footnote {
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid #eef0f3;
+  color: #525963;
+  font-size: 0.85rem;
+}
+
 @media (max-width: 780px) {
   .toolbar {
     align-items: flex-start;
