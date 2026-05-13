@@ -21,6 +21,11 @@ export default function App() {
     }, 3200);
   }, []);
 
+  const handleHistoryChange = useCallback((undo: boolean, redo: boolean) => {
+    setCanUndo(undo);
+    setCanRedo(redo);
+  }, []);
+
   const loadImageFile = useCallback(
     async (file: File | Blob | null) => {
       if (!file) {
@@ -105,10 +110,7 @@ export default function App() {
           onToolChange={setActiveTool}
           onToast={showToast}
           onImageLoaded={setHasImage}
-          onHistoryChange={(undo, redo) => {
-            setCanUndo(undo);
-            setCanRedo(redo);
-          }}
+          onHistoryChange={handleHistoryChange}
         />
       </main>
 
