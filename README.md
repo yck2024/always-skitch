@@ -41,6 +41,13 @@ Yes — this is a pure front-end app. `npm run build` produces static files in `
 
 ## Deploy to GitHub Pages
 
+The Vite production base is `/always-skitch/`, which matches this repository's GitHub Pages URL:
+
+```text
+https://yck2024.github.io/always-skitch/
+```
+
+The recommended deployment is GitHub Actions. The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
 This app uses Vite with `base: './'`, so the built assets work from a repository subpath on GitHub Pages.
 
 The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
@@ -49,6 +56,16 @@ The repository includes `.github/workflows/deploy-pages.yml`, which builds the s
 2. In GitHub, open **Settings → Pages**.
 3. Set **Build and deployment → Source** to **GitHub Actions**.
 4. Push to the `main` branch, or run the **Deploy static app to GitHub Pages** workflow manually from the Actions tab.
+5. Wait for the workflow to finish, then open `https://yck2024.github.io/always-skitch/`.
+
+### If the GitHub Pages site is blank
+
+A blank page usually means GitHub Pages is serving the repository root (`index.html`) instead of the production build. The root file points at Vite source code (`/src/main.tsx`), which GitHub Pages cannot compile by itself.
+
+Fix it in one of these ways:
+
+- **Recommended:** set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**, merge this PR into `main`, and let the deploy workflow complete.
+- **Branch/folder fallback:** run `npm run build:pages`, commit the generated `docs/` folder, and set **Settings → Pages → Build and deployment → Source** to **Deploy from a branch** with the `main` branch and `/docs` folder.
 
 Manual deployment also works:
 
