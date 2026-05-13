@@ -372,6 +372,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           width: Math.abs(pointer.x - drawing.startX),
           height: Math.abs(pointer.y - drawing.startY),
         });
+        // .set() updates the props but doesn't refresh aCoords, which Fabric
+        // uses for hit-testing. Without this, clicks on the finished rect
+        // miss because Fabric still thinks it's a 1x1 box at the start point.
+        drawing.object.setCoords();
       } else {
         updateArrowPreview(drawing.line, drawing.head, drawing.startX, drawing.startY, pointer.x, pointer.y);
       }
