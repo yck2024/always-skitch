@@ -1,18 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CanvasEditor, type CanvasEditorHandle } from './components/CanvasEditor';
 import { Toolbar } from './components/Toolbar';
+import { DEFAULT_COLOR } from './palette';
 import type { ToastMessage, Tool } from './types';
 import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from './utils/clipboard';
 
 export default function App() {
   const editorRef = useRef<CanvasEditorHandle | null>(null);
   const [activeTool, setActiveTool] = useState<Tool>('rectangle');
+  const [activeColor, setActiveColor] = useState<string>(DEFAULT_COLOR);
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [hasImage, setHasImage] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  const handleColorChange = useCallback((color: string) => {
+    setActiveColor(color);
+    editorRef.current?.recolorSelected(color);
+  }, []);
+
+  useEffect(() => {
+    setActiveColor(DEFAULT_COLOR);
+  }, [imageDataUrl]);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -72,6 +84,15 @@ export default function App() {
         if (event.key === 'Escape') {
           event.preventDefault();
           setShowShortcuts(false);
+        }
+        return;
+      }
+      // While the color picker is open, Esc closes it; other shortcuts are suppressed
+      // so picking a color doesn't also fire a tool switch.
+      if (colorPickerOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setColorPickerOpen(false);
         }
         return;
       }
@@ -139,17 +160,21 @@ export default function App() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [loadImageFile, hasImage, showShortcuts]);
+  }, [loadImageFile, hasImage, showShortcuts, colorPickerOpen]);
 
   return (
     <div className="app">
       <Toolbar
         activeTool={activeTool}
+        activeColor={activeColor}
+        colorPickerOpen={colorPickerOpen}
         canUndo={canUndo}
         canRedo={canRedo}
         hasImage={hasImage}
         onPaste={handlePasteButton}
         onToolChange={setActiveTool}
+        onColorChange={handleColorChange}
+        onColorPickerOpenChange={setColorPickerOpen}
         onUndo={() => editorRef.current?.undo()}
         onRedo={() => editorRef.current?.redo()}
         onDelete={() => editorRef.current?.deleteSelected()}
@@ -164,6 +189,7 @@ export default function App() {
           ref={editorRef}
           imageDataUrl={imageDataUrl}
           activeTool={activeTool}
+          activeColor={activeColor}
           onToolChange={setActiveTool}
           onToast={showToast}
           onImageLoaded={setHasImage}

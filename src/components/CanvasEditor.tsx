@@ -15,6 +15,7 @@ import {
   util,
 } from 'fabric';
 import type { Tool } from '../types';
+import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
@@ -23,8 +24,6 @@ import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils
 FabricObject.ownDefaults.originX = 'left';
 FabricObject.ownDefaults.originY = 'top';
 
-// Annotation style constants: intentionally bold, red, and Skitch-like.
-const SKITCH_RED = '#ff2a1a';
 const STROKE_WIDTH = 8;
 const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
 const FONT_SIZE = 32;
@@ -41,6 +40,7 @@ type DrawingState =
 interface CanvasEditorProps {
   imageDataUrl: string | null;
   activeTool: Tool;
+  activeColor: string;
   onToolChange: (tool: Tool) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
   onImageLoaded: (hasImage: boolean) => void;
@@ -54,6 +54,7 @@ export interface CanvasEditorHandle {
   clearAnnotations: () => void;
   copyPng: () => Promise<void>;
   downloadPng: () => void;
+  recolorSelected: (color: string) => void;
 }
 
 function annotationObjects(canvas: Canvas) {
@@ -79,7 +80,7 @@ function makeBackground(image: FabricImage) {
   return image;
 }
 
-function makeArrow(scale: number, startX: number, startY: number, endX: number, endY: number) {
+function makeArrow(color: string, scale: number, startX: number, startY: number, endX: number, endY: number) {
   // Skitch-style tapered arrow: a single polygon with a pointy tail, narrow
   // body, and a wide triangular head. Points are pre-rotated so we don't have
   // to fight Fabric's bbox-rotation pivot.
@@ -111,7 +112,7 @@ function makeArrow(scale: number, startX: number, startY: number, endX: number, 
     rotate(bodyEnd, -bodyHalf),         // body lower end
   ];
   const polygon = new Polygon(points, {
-    fill: SKITCH_RED,
+    fill: color,
     strokeLineJoin: 'round',
   });
   polygon.set('data', { kind: 'arrow' });
@@ -125,12 +126,12 @@ function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: 
   head.set({ left: endX, top: endY, angle: (Math.atan2(dy, dx) * 180) / Math.PI + 90 });
 }
 
-function makeText(scale: number, left: number, top: number) {
+function makeText(color: string, scale: number, left: number, top: number) {
   return new Textbox('Text', {
     left,
     top,
     width: 260 * scale,
-    fill: SKITCH_RED,
+    fill: color,
     stroke: '#ffffff',
     strokeWidth: 2.5 * scale,
     paintFirst: 'stroke',
@@ -143,11 +144,11 @@ function makeText(scale: number, left: number, top: number) {
   });
 }
 
-function makeCallout(scale: number, left: number, top: number, number: number) {
+function makeCallout(color: string, scale: number, left: number, top: number, number: number) {
   const size = CALLOUT_SIZE * scale;
   const circle = new Circle({
     radius: size / 2,
-    fill: SKITCH_RED,
+    fill: color,
     stroke: '#ffffff',
     strokeWidth: 3 * scale,
     originX: 'center',
@@ -189,7 +190,7 @@ function createPixelatedCrop(image: HTMLImageElement, x: number, y: number, widt
 }
 
 export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(function CanvasEditor(
-  { imageDataUrl, activeTool, onToolChange, onToast, onImageLoaded, onHistoryChange },
+  { imageDataUrl, activeTool, activeColor, onToolChange, onToast, onImageLoaded, onHistoryChange },
   ref,
 ) {
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
@@ -197,6 +198,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const backgroundElementRef = useRef<HTMLImageElement | null>(null);
   const drawingRef = useRef<DrawingState | null>(null);
   const activeToolRef = useRef(activeTool);
+  const activeColorRef = useRef(activeColor);
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
   const restoringRef = useRef(false);
@@ -235,6 +237,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       canvas.requestRenderAll();
     }
   }, [activeTool]);
+
+  useEffect(() => {
+    activeColorRef.current = activeColor;
+  }, [activeColor]);
 
   useEffect(() => {
     if (!canvasElRef.current) return;
@@ -308,6 +314,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
 
       const scale = annotationScale();
 
+      const color = activeColorRef.current;
+
       if (activeToolRef.current === 'rectangle') {
         const rect = new Rect({
           left: pointer.x,
@@ -315,7 +323,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           width: 1,
           height: 1,
           fill: 'transparent',
-          stroke: SKITCH_RED,
+          stroke: color,
           strokeWidth: STROKE_WIDTH * scale,
           rx: 5 * scale,
           ry: 5 * scale,
@@ -325,7 +333,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         drawingRef.current = { kind: 'rectangle', startX: pointer.x, startY: pointer.y, object: rect };
       } else if (activeToolRef.current === 'arrow') {
         const line = new Line([pointer.x, pointer.y, pointer.x, pointer.y], {
-          stroke: SKITCH_RED,
+          stroke: color,
           strokeWidth: STROKE_WIDTH * scale,
           strokeLineCap: 'round',
           selectable: false,
@@ -336,7 +344,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           top: pointer.y,
           width: 34 * scale,
           height: 42 * scale,
-          fill: SKITCH_RED,
+          fill: color,
           originX: 'center',
           originY: 'center',
           selectable: false,
@@ -350,8 +358,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           top: pointer.y,
           width: 1,
           height: 1,
-          fill: 'rgba(255, 42, 26, 0.08)',
-          stroke: SKITCH_RED,
+          fill: hexToLowAlpha(color, 0.08),
+          stroke: color,
           strokeDashArray: [12 * scale, 8 * scale],
           strokeWidth: 3 * scale,
           data: { kind: 'blur-preview' },
@@ -397,7 +405,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       } else if (drawing.kind === 'arrow') {
         canvas.remove(drawing.line, drawing.head);
         if (Math.hypot(pointer.x - drawing.startX, pointer.y - drawing.startY) > 10) {
-          addFinalObject(makeArrow(annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y));
+          addFinalObject(makeArrow(activeColorRef.current, annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y));
         }
       } else {
         canvas.remove(drawing.object);
@@ -419,13 +427,14 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       if (!backgroundElementRef.current) return;
       const pointer = pointerFromEvent(event);
       const scale = annotationScale();
+      const color = activeColorRef.current;
       if (activeToolRef.current === 'text') {
-        const text = makeText(scale, pointer.x, pointer.y);
+        const text = makeText(color, scale, pointer.x, pointer.y);
         addFinalObject(text);
         text.enterEditing();
         text.selectAll();
       } else if (activeToolRef.current === 'callout') {
-        addFinalObject(makeCallout(scale, pointer.x, pointer.y, calloutNumberRef.current++));
+        addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, calloutNumberRef.current++));
       }
     };
 
@@ -557,6 +566,22 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     downloadPng: () => {
       const dataUrl = exportDataUrl();
       if (dataUrl) downloadDataUrl(dataUrl);
+    },
+    recolorSelected: (color: string) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const activeObjects = canvas
+        .getActiveObjects()
+        .filter((object) => (object as FabricObject & { data?: { kind?: string } }).data?.kind !== 'background');
+      if (activeObjects.length === 0) return;
+      activeObjects.forEach((object) => recolorAnnotation(object, color));
+      canvas.requestRenderAll();
+      const next = serializeAnnotations(canvas);
+      if (next !== historyRef.current[historyIndexRef.current]) {
+        historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
+        historyIndexRef.current = historyRef.current.length - 1;
+        onHistoryChange(true, false);
+      }
     },
   }));
 

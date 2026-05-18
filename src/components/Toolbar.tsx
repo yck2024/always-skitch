@@ -1,12 +1,18 @@
 import type { Tool } from '../types';
+import { PALETTE } from '../palette';
+import { ColorPicker } from './ColorPicker';
 
 interface ToolbarProps {
   activeTool: Tool;
+  activeColor: string;
+  colorPickerOpen: boolean;
   canUndo: boolean;
   canRedo: boolean;
   hasImage: boolean;
   onPaste: () => void;
   onToolChange: (tool: Tool) => void;
+  onColorChange: (color: string) => void;
+  onColorPickerOpenChange: (open: boolean) => void;
   onUndo: () => void;
   onRedo: () => void;
   onDelete: () => void;
@@ -27,11 +33,15 @@ const tools: Array<{ tool: Tool; label: string }> = [
 
 export function Toolbar({
   activeTool,
+  activeColor,
+  colorPickerOpen,
   canUndo,
   canRedo,
   hasImage,
   onPaste,
   onToolChange,
+  onColorChange,
+  onColorPickerOpenChange,
   onUndo,
   onRedo,
   onDelete,
@@ -65,6 +75,14 @@ export function Toolbar({
             {label}
           </button>
         ))}
+        <ColorPicker
+          palette={PALETTE}
+          value={activeColor}
+          open={colorPickerOpen}
+          disabled={!hasImage}
+          onChange={onColorChange}
+          onOpenChange={onColorPickerOpenChange}
+        />
       </div>
 
       <div className="toolbar-group" role="group" aria-label="Edit commands">
