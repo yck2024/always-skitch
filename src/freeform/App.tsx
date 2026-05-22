@@ -4,7 +4,19 @@ import { TopNav } from '../components/TopNav';
 import { DEFAULT_COLOR, PALETTE } from '../palette';
 import type { ToastMessage, Tool } from '../types';
 import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from '../utils/clipboard';
-import { FreeformCanvasEditor, type FreeformCanvasEditorHandle } from './CanvasEditor';
+import { FreeformCanvasEditor, type FreeformCanvasColor, type FreeformCanvasEditorHandle } from './CanvasEditor';
+
+// Three Canvas color choices: the color of empty space between Images. This is
+// independent of the Active color picker — they live in separate toolbar
+// groups and never share state. 'transparent' is rendered as a checker
+// pattern on .canvas-wrap so users see at-a-glance that the area is
+// see-through (vs. just a white page background, which could be confused with
+// the White option).
+const CANVAS_COLOR_OPTIONS: { value: FreeformCanvasColor; label: string }[] = [
+  { value: 'white', label: 'White' },
+  { value: 'black', label: 'Black' },
+  { value: 'transparent', label: 'Transparent' },
+];
 
 // Freeform is the multi-image annotation board at /freeform. See
 // src/freeform/CONTEXT.md (Canvas/Image/Annotation glossary) and ADR 0002
@@ -44,6 +56,10 @@ export default function FreeformApp() {
   // pen color — and is reused so the two products feel related.
   const [activeColor, setActiveColor] = useState<string>(DEFAULT_COLOR);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  // Canvas color (empty-space color between Images). Component state only —
+  // no localStorage, no router. Defaults to 'white' on every fresh session.
+  // Not pushed to history; switching is a setting, not an edit.
+  const [canvasColor, setCanvasColor] = useState<FreeformCanvasColor>('white');
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -156,7 +172,7 @@ export default function FreeformApp() {
     <div className="app">
       <TopNav />
       {/* Freeform toolbar. Wave-3 order, left to right:
-            Paste Image | Tools group | Active color | Canvas color (added in #9)
+            Paste Image | Tools group | Active color | Canvas color
             | Undo | Redo | Delete
           We deliberately do NOT reuse Skitch's Toolbar component, which is
           bound to Skitch's tool set, single-image model, and per-Background
@@ -189,6 +205,26 @@ export default function FreeformApp() {
           onChange={handleColorChange}
           onOpenChange={setColorPickerOpen}
         />
+        {/* Canvas color picker — three small swatches in a dedicated toolbar
+            group, intentionally visually distinct from the Active color picker
+            (single circular swatch with a popover). Distinct shape +
+            always-visible three swatches prevents users confusing "color of
+            empty space" with "color of new annotations". Not part of undo
+            history; selection is a setting, not an edit. */}
+        <div className="canvas-color-group" role="group" aria-label="Canvas color">
+          <span className="canvas-color-label" aria-hidden="true">Canvas</span>
+          {CANVAS_COLOR_OPTIONS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              className={`canvas-color-swatch canvas-color-${value}${canvasColor === value ? ' active' : ''}`}
+              onClick={() => setCanvasColor(value)}
+              aria-label={`Canvas color: ${label}`}
+              aria-pressed={canvasColor === value}
+              title={`Canvas color: ${label}`}
+            />
+          ))}
+        </div>
         <button type="button" onClick={() => editorRef.current?.undo()} disabled={!canUndo}>
           Undo
         </button>
@@ -207,6 +243,7 @@ export default function FreeformApp() {
           hasImages={hasImages}
           activeTool={activeTool}
           activeColor={activeColor}
+          canvasColor={canvasColor}
           onHasImagesChange={setHasImages}
           onHistoryChange={handleHistoryChange}
           onToast={showToast}

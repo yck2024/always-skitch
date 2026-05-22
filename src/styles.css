@@ -413,3 +413,99 @@ button.primary {
   }
 }
 
+/* --- Freeform Canvas color picker (issue #9) ----------------------------- */
+/* Distinct from the Active color picker (parallel issue #6): three permanent
+   small swatches in a dedicated toolbar group, prefixed with a "Canvas" label
+   so users immediately see this controls the canvas surface, not the pen. */
+
+.canvas-color-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem 0.3rem 0.7rem;
+  border: 1px solid #d3d8df;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.canvas-color-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #525963;
+  margin-right: 0.15rem;
+  user-select: none;
+}
+
+.canvas-color-swatch {
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(25, 33, 44, 0.28);
+  background-clip: padding-box;
+  /* Override the global `button` hover transform — these swatches are tiny
+     enough that a 1px lift looks twitchy. */
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.canvas-color-swatch:hover:not(:disabled) {
+  transform: none;
+  border-color: #34383e;
+  box-shadow: 0 0 0 2px rgba(52, 56, 62, 0.12);
+}
+
+.canvas-color-swatch.canvas-color-white {
+  background: #ffffff;
+}
+
+.canvas-color-swatch.canvas-color-black {
+  background: #000000;
+  border-color: rgba(25, 33, 44, 0.4);
+}
+
+/* Mini checker pattern on the transparent swatch — same visual language as the
+   canvas-level checker so the affordance is obvious. */
+.canvas-color-swatch.canvas-color-transparent {
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #c8d0da 25%, transparent 25%),
+    linear-gradient(-45deg, #c8d0da 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c8d0da 75%),
+    linear-gradient(-45deg, transparent 75%, #c8d0da 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+}
+
+.canvas-color-swatch.active {
+  border-color: #34383e;
+  box-shadow: 0 0 0 2px rgba(52, 56, 62, 0.28);
+}
+
+/* When Canvas color is Transparent, render a soft checker pattern on the
+   wrapping element so the empty space between Images reads as "see-through"
+   rather than "white". We rely on Fabric clearing its own backgroundColor
+   (set to '' in CanvasEditor) so this shows through the canvas element. */
+.canvas-wrap[data-canvas-color="transparent"] {
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #d3d8df 25%, transparent 25%),
+    linear-gradient(-45deg, #d3d8df 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d3d8df 75%),
+    linear-gradient(-45deg, transparent 75%, #d3d8df 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
+/* For White/Black, paint the wrapping element to match — when the canvas's
+   internal dimensions shrink/grow during fit, the wrapper's background is
+   what shows at the edges if anything. Keeps the look seamless. */
+.canvas-wrap[data-canvas-color="white"] {
+  background-color: #ffffff;
+}
+
+.canvas-wrap[data-canvas-color="black"] {
+  background-color: #000000;
+}
+

@@ -50,6 +50,11 @@ type DrawingState =
   | { kind: 'rectangle'; startX: number; startY: number; object: Rect }
   | { kind: 'arrow'; startX: number; startY: number; line: Line; head: Triangle };
 
+// Canvas color (the empty-space color between Images). 'transparent' means
+// "let the wrapping element's background show through" — see ADR-style note
+// in App.tsx for why we picked a checker-pattern visual for transparent.
+export type FreeformCanvasColor = 'white' | 'black' | 'transparent';
+
 interface CanvasEditorProps {
   // True when the parent thinks at least one Image is on the canvas. Drives
   // the empty-state vs canvas display in the parent; the canvas itself is the
@@ -67,6 +72,9 @@ interface CanvasEditorProps {
   // NOT via this prop changing — that way we don't re-fire recolor on every
   // unrelated render.
   activeColor: string;
+  // Color of the empty space between Images on the Canvas. NOT undoable — it
+  // is a session setting, not an edit (see Canvas color glossary entry).
+  canvasColor: FreeformCanvasColor;
   onHasImagesChange: (hasImages: boolean) => void;
   onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
@@ -242,7 +250,7 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
 
 export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, CanvasEditorProps>(
   function FreeformCanvasEditor(
-    { hasImages, activeTool, activeColor, onHasImagesChange, onHistoryChange, onToast, onToolChange },
+    { hasImages, activeTool, activeColor, canvasColor, onHasImagesChange, onHistoryChange, onToast, onToolChange },
     ref,
   ) {
     const canvasElRef = useRef<HTMLCanvasElement | null>(null);
@@ -628,6 +636,29 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       if (hasImages) fitCanvasToViewport();
     }, [hasImages]);
 
+    // Apply Canvas color (empty-space color between Images). White/Black set
+    // a solid Fabric backgroundColor; Transparent clears it so the wrapping
+    // element's background shows through — the canvas-wrap gets a
+    // data-canvas-color attribute and styles.css renders a checker pattern
+    // there to make "transparent" visually unambiguous. NOT pushed to history:
+    // this is a session setting, not an edit (see the Canvas color glossary
+    // entry).
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      if (canvasColor === 'white') {
+        canvas.backgroundColor = '#ffffff';
+      } else if (canvasColor === 'black') {
+        canvas.backgroundColor = '#000000';
+      } else {
+        // Fabric treats falsy backgroundColor as "no fill" — the underlying
+        // DOM canvas remains transparent, letting `.canvas-wrap`'s background
+        // (the checker pattern, applied via a data attribute) show through.
+        canvas.backgroundColor = '';
+      }
+      canvas.requestRenderAll();
+    }, [canvasColor]);
+
     const restoreHistory = async (state: string) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -814,7 +845,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             <p>Paste an image to start — or paste several to build a board.</p>
           </div>
         ) : null}
-        <div className={hasImages ? 'canvas-wrap visible' : 'canvas-wrap'}>
+        <div
+          className={hasImages ? 'canvas-wrap visible' : 'canvas-wrap'}
+          data-canvas-color={canvasColor}
+        >
           <canvas ref={canvasElRef} />
         </div>
       </section>
