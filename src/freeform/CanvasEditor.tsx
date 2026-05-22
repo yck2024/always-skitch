@@ -70,6 +70,29 @@ const BLUR_MIN_SIZE = 8;
 // the same way CSS shadows shrink under `transform: scale(...)`.
 const IMAGE_SHADOW = { color: 'rgba(0, 0, 0, 0.25)', blur: 30, offsetX: 0, offsetY: 15 };
 
+// Subtle hairline border applied to every Image so its actual edge is clearly
+// visible against any Canvas color (especially during corner resize, where the
+// shadow alone can blur out the real edge). `strokeUniform: true` keeps the
+// stroke at exactly 1 CSS pixel regardless of object scale OR the canvas
+// auto-fit zoom — without it the line shrinks to sub-pixel at typical
+// fit-to-viewport zooms (<1) and visually disappears. Annotations stay
+// unbordered; the "make Images look nicer" treatment is Image-only.
+const IMAGE_STROKE = {
+  stroke: 'rgba(0, 0, 0, 0.12)',
+  strokeWidth: 1,
+  strokeUniform: true,
+};
+
+// Per-side scene-coord extent the IMAGE_STROKE adds beyond an Image's
+// geometry. With strokeUniform: true the rendered stroke is 1 CSS pixel
+// regardless of object scale or canvas zoom, so in scene coordinates the bbox
+// grows by strokeWidth/(2*displayScale) on each side. At the soft-cap of 2-4
+// images (displayScale typically 0.5-1.0) that's at most 1px per side in
+// scene coords. Use a flat 1px on each side — overkill but safe, and keeps
+// fit-to-viewport and export from clipping the hairline. Annotations remain
+// at their bare rect (no stroke).
+const STROKE_EXTENT = 1;
+
 // Per-side scene-coord extent the IMAGE_SHADOW adds beyond an Image's geometry.
 // Used by bbox math (fit-to-viewport and export) to grow each Image's
 // contribution to the content union so the shadow isn't clipped at the canvas
@@ -203,11 +226,14 @@ function objectBoundsWithShadow(object: FabricObject): {
   const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
   const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
   if ((object as TaggedObject).data?.kind === 'image') {
+    // Shadow expansion first, then the hairline stroke (#11 follow-up). Stroke
+    // is a tiny extra 1px per side but matters at the exported PNG boundary —
+    // without it the stroke would be clipped at the right/bottom edges.
     return {
-      left: left - SHADOW_EXTENT.left,
-      top: top - SHADOW_EXTENT.top,
-      right: right + SHADOW_EXTENT.right,
-      bottom: bottom + SHADOW_EXTENT.bottom,
+      left: left - SHADOW_EXTENT.left - STROKE_EXTENT,
+      top: top - SHADOW_EXTENT.top - STROKE_EXTENT,
+      right: right + SHADOW_EXTENT.right + STROKE_EXTENT,
+      bottom: bottom + SHADOW_EXTENT.bottom + STROKE_EXTENT,
     };
   }
   return { left, top, right, bottom };
@@ -232,6 +258,10 @@ function applyImageInteractionDefaults(image: FabricObject) {
     mtr: false,
   });
   image.shadow = new Shadow(IMAGE_SHADOW);
+  // Hairline border (#11 follow-up). Like `shadow` above, stroke props are
+  // not in the `serializeAll` prop list — they're owned by this function so
+  // restored Images pick them back up on the same frame they appear.
+  image.set({ ...IMAGE_STROKE });
 }
 
 // Skitch filters out the background singleton when serializing. Freeform has no
