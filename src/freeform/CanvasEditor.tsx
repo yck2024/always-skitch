@@ -16,7 +16,7 @@ import {
   util,
 } from 'fabric';
 import type { Tool } from '../types';
-import { recolorAnnotation } from '../utils/colors';
+import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
 // globally in src/components/CanvasEditor.tsx. We rely on that here. If a user
@@ -43,12 +43,25 @@ const STROKE_WIDTH = 8;
 const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
 const FONT_SIZE = 32;
 const CALLOUT_SIZE = 42;
+// Pixel-block size for the Blur tool. Mirrors Skitch's PIXEL_SIZE so a blur
+// drawn in Freeform looks identical to one drawn in Skitch at the same source
+// resolution. Duplicate-not-import per the wave-3 precedent — extracting a
+// shared module risks coupling the two editors before they need it.
+const PIXEL_SIZE = 12;
+// Minimum drag size for a blur to commit (display-coord pixels). Below this we
+// treat the drag as a stray click and silently discard. Mirrors Skitch.
+const BLUR_MIN_SIZE = 8;
 
-// Drawing state for mouse-drag tools (arrow, rectangle). Click-place tools
-// (text, callout) finalize immediately so they don't appear here.
+// Drawing state for mouse-drag tools (arrow, rectangle, blur). Click-place
+// tools (text, callout) finalize immediately so they don't appear here. The
+// blur drag carries a reference to the source Image — anchored at mouse-down,
+// NOT re-discovered on mouse-up — so a drag that starts on an Image and
+// extends past its edge still maps unambiguously to that Image's pixels even
+// if the pointer ends over another Image (or empty Canvas).
 type DrawingState =
   | { kind: 'rectangle'; startX: number; startY: number; object: Rect }
-  | { kind: 'arrow'; startX: number; startY: number; line: Line; head: Triangle };
+  | { kind: 'arrow'; startX: number; startY: number; line: Line; head: Triangle }
+  | { kind: 'blur'; startX: number; startY: number; object: Rect; source: FabricImage };
 
 // Canvas color (the empty-space color between Images). 'transparent' means
 // "let the wrapping element's background show through" — see ADR-style note
@@ -224,6 +237,43 @@ function makeText(color: string, scale: number, left: number, top: number) {
     editable: true,
     data: { kind: 'text' },
   });
+}
+
+// Pixelate a crop of an HTMLImageElement's natural-resolution pixels by
+// downsampling then nearest-neighbor upscaling. Returns a data URL. Duplicate
+// of Skitch's identically-named util (src/components/CanvasEditor.tsx) by
+// design — the wave-3 brief explicitly calls out "duplication is fine" rather
+// than risk coupling two editors that may diverge.
+function createPixelatedCrop(image: HTMLImageElement, x: number, y: number, width: number, height: number) {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  const small = document.createElement('canvas');
+  small.width = Math.max(1, Math.ceil(safeWidth / PIXEL_SIZE));
+  small.height = Math.max(1, Math.ceil(safeHeight / PIXEL_SIZE));
+  const smallContext = small.getContext('2d')!;
+  smallContext.imageSmoothingEnabled = false;
+  smallContext.drawImage(image, x, y, safeWidth, safeHeight, 0, 0, small.width, small.height);
+
+  const output = document.createElement('canvas');
+  output.width = safeWidth;
+  output.height = safeHeight;
+  const outputContext = output.getContext('2d')!;
+  outputContext.imageSmoothingEnabled = false;
+  outputContext.drawImage(small, 0, 0, small.width, small.height, 0, 0, safeWidth, safeHeight);
+  return output.toDataURL('image/png');
+}
+
+// Display-coord bounding rect of a Fabric Image. Computed from left/top and
+// the scaled width/height because the Image may have been resized at paste
+// time (scaleX/scaleY != 1) or by the user (#7 corner resize). Used both for
+// the mouse-down hit-test (start-on-Image rule) and for clipping the final
+// blur rect to the source Image's bounds on mouse-up.
+function imageDisplayBounds(image: FabricImage) {
+  const left = image.left ?? 0;
+  const top = image.top ?? 0;
+  const width = image.getScaledWidth?.() ?? image.width ?? 0;
+  const height = image.getScaledHeight?.() ?? image.height ?? 0;
+  return { left, top, right: left + width, bottom: top + height, width, height };
 }
 
 function makeCallout(color: string, scale: number, left: number, top: number, number: number) {
@@ -409,10 +459,49 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.requestRenderAll();
     };
 
+    // Schedule any async canvas mutation behind the previous one. Used by
+    // `addImage`, by `undo`/`redo` (via `restoreHistory`), AND by the Blur
+    // tool's mouse-up handler when it kicks off a FabricImage.fromURL decode.
+    // See the mutationQueueRef declaration for the race shapes this prevents.
+    // Lifted to component-body scope (rather than living inside the
+    // useImperativeHandle factory) so the canvas-setup effect can reach it
+    // from inside mouse handlers — keeps a single queue across all async
+    // canvas mutations regardless of which entry point triggered them.
+    const queueMutation = <T,>(op: () => Promise<T>): Promise<T> => {
+      const previous = mutationQueueRef.current;
+      const next = previous.then(op);
+      mutationQueueRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    };
+
     useEffect(() => {
       activeToolRef.current = activeTool;
       const canvas = canvasRef.current;
-      if (canvas) syncObjectInteractivity(canvas, activeTool);
+      if (canvas) {
+        syncObjectInteractivity(canvas, activeTool);
+        // Tool-aware cursor (#8): Blur is the first tool with per-Image
+        // semantics — the cursor over empty Canvas must signal "disabled"
+        // (`not-allowed`) and over an Image must signal "draw here"
+        // (`crosshair`). The actual over-Image vs over-empty decision lives
+        // in the `mouse:move` listener (it has the pointer); here we set the
+        // baseline so the cursor is correct even before the first mouse-move
+        // event fires (e.g., the moment the user picks the tool with the
+        // pointer outside the canvas). For non-Blur tools we restore the
+        // Fabric defaults — Select uses 'move', drawing tools use the
+        // browser default — so this doesn't bleed across tools.
+        if (activeTool === 'blur') {
+          canvas.defaultCursor = 'not-allowed';
+          canvas.hoverCursor = 'not-allowed';
+        } else {
+          // Fabric's built-in defaults. Setting back explicitly so a previous
+          // Blur tool selection doesn't leave 'not-allowed' baked in.
+          canvas.defaultCursor = 'default';
+          canvas.hoverCursor = 'move';
+        }
+      }
     }, [activeTool]);
 
     useEffect(() => {
@@ -486,8 +575,8 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
         const tool = activeToolRef.current;
         // Select mode is handled by Fabric's built-ins (drag, marquee). Only
-        // the drag-tools (arrow, rectangle) start a drawing here; click-place
-        // tools (text, callout) finalize in mouse:up below.
+        // the drag-tools (arrow, rectangle, blur) start a drawing here;
+        // click-place tools (text, callout) finalize in mouse:up below.
         if (tool === 'select') return;
         // Require at least one Image — drawing on an empty Canvas has no anchor
         // and the auto-fit logic relies on at least one Image being present.
@@ -531,6 +620,40 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           });
           canvas.add(rect);
           drawingRef.current = { kind: 'rectangle', startX: pointer.x, startY: pointer.y, object: rect };
+        } else if (tool === 'blur') {
+          // Per-Image gate (ADR-0005 / issue #8): a blur drag can only START
+          // on top of an Image. Walk Images top-to-bottom in render order
+          // (last-added wins on overlap, matching visual stacking). If the
+          // pointer is over empty Canvas, do nothing — no preview, no
+          // drawing state. The cursor is already `not-allowed` (see the
+          // tool-aware cursor effect below) so the user has a clear signal.
+          const images = imageObjects(canvas) as FabricImage[];
+          let source: FabricImage | undefined;
+          for (let i = images.length - 1; i >= 0; i -= 1) {
+            if (images[i].containsPoint(pointer)) {
+              source = images[i];
+              break;
+            }
+          }
+          if (!source) return;
+          const rect = new Rect({
+            left: pointer.x,
+            top: pointer.y,
+            width: 1,
+            height: 1,
+            fill: hexToLowAlpha(color, 0.08),
+            stroke: color,
+            strokeDashArray: [12 * scale, 8 * scale],
+            strokeWidth: 3 * scale,
+            // Tag the preview with 'blur-preview' so recolorAnnotation's
+            // existing switch case (utils/colors.ts) handles live recolor if
+            // the user changes the pen color mid-drag. Matches Skitch.
+            data: { kind: 'blur-preview' },
+            selectable: false,
+            evented: false,
+          });
+          canvas.add(rect);
+          drawingRef.current = { kind: 'blur', startX: pointer.x, startY: pointer.y, object: rect, source };
         } else if (tool === 'arrow') {
           // While dragging we draw a cheap line+triangle preview; the final
           // polygon arrow is constructed in mouse:up. The preview is two
@@ -559,10 +682,32 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       };
 
       const handleMouseMove = (event: { e: CanvasPointerEvent }) => {
+        // Dynamic cursor for the Blur tool (#8): `crosshair` over an Image
+        // signals "draw here", `not-allowed` over empty Canvas signals
+        // "disabled". Only active while the Blur tool is selected — for other
+        // tools we leave the [activeTool]-effect-set defaults alone so the
+        // Select tool's 'move' hover and the drawing tools' default cursor
+        // still work. We update `hoverCursor`/`defaultCursor` (not
+        // `canvas.setCursor`) because Fabric reapplies the canvas-level cursor
+        // every render — a one-shot `setCursor` flickers as the canvas redraws.
+        if (activeToolRef.current === 'blur' && !drawingRef.current) {
+          const pointer = pointerFromEvent(event);
+          const overImage = (imageObjects(canvas) as FabricImage[]).some((image) => image.containsPoint(pointer));
+          const next = overImage ? 'crosshair' : 'not-allowed';
+          if (canvas.defaultCursor !== next) {
+            canvas.defaultCursor = next;
+            canvas.hoverCursor = next;
+          }
+        }
         const drawing = drawingRef.current;
         if (!drawing) return;
         const pointer = pointerFromEvent(event);
-        if (drawing.kind === 'rectangle') {
+        if (drawing.kind === 'rectangle' || drawing.kind === 'blur') {
+          // Blur preview is allowed to extend past the source Image's edges
+          // during drag — only the FINAL committed rect is clipped at
+          // mouse-up. Showing the unclipped preview matches what Skitch does
+          // and gives the user a clear "I'm dragging" affordance even if the
+          // intended bottom-right falls outside the Image.
           drawing.object.set({
             left: Math.min(pointer.x, drawing.startX),
             top: Math.min(pointer.y, drawing.startY),
@@ -592,6 +737,74 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             } else {
               addFinalObject(drawing.object);
             }
+          } else if (drawing.kind === 'blur') {
+            // Drop the dashed preview rect regardless of outcome.
+            canvas.remove(drawing.object);
+            // Drag rect in Canvas (display) coordinates, normalized so
+            // (x0, y0) is top-left and (x1, y1) is bottom-right.
+            const dragLeft = Math.min(pointer.x, drawing.startX);
+            const dragTop = Math.min(pointer.y, drawing.startY);
+            const dragRight = Math.max(pointer.x, drawing.startX);
+            const dragBottom = Math.max(pointer.y, drawing.startY);
+            // Hard-clip the drag rect to the source Image's display bounds.
+            // The Image may have been moved or resized since paste (#7), so
+            // we read its bounds fresh here rather than caching at mouse-down.
+            const bounds = imageDisplayBounds(drawing.source);
+            const clipLeft = Math.max(dragLeft, bounds.left);
+            const clipTop = Math.max(dragTop, bounds.top);
+            const clipRight = Math.min(dragRight, bounds.right);
+            const clipBottom = Math.min(dragBottom, bounds.bottom);
+            const clipWidth = clipRight - clipLeft;
+            const clipHeight = clipBottom - clipTop;
+            // Discard tiny rects (stray clicks, or drags whose intersection
+            // with the source Image is too small to be intentional). Mirrors
+            // Skitch's < 8px guard.
+            if (clipWidth < BLUR_MIN_SIZE || clipHeight < BLUR_MIN_SIZE) {
+              canvas.requestRenderAll();
+              return;
+            }
+            // Map the clipped display rect into the source Image's NATURAL
+            // pixel coordinates. The Image's display origin is (left, top)
+            // and each natural pixel occupies `scaleX` display units along x
+            // (and `scaleY` along y). Sampling from natural pixels — not from
+            // the resized display — preserves source quality so the blur
+            // matches Skitch's per-Background blur byte-for-byte at the same
+            // PIXEL_SIZE.
+            const source = drawing.source;
+            const scaleX = source.scaleX ?? 1;
+            const scaleY = source.scaleY ?? 1;
+            const naturalX = (clipLeft - bounds.left) / scaleX;
+            const naturalY = (clipTop - bounds.top) / scaleY;
+            const naturalWidth = clipWidth / scaleX;
+            const naturalHeight = clipHeight / scaleY;
+            const element = source.getElement() as HTMLImageElement;
+            const dataUrl = createPixelatedCrop(element, naturalX, naturalY, naturalWidth, naturalHeight);
+            const blurLeft = clipLeft;
+            const blurTop = clipTop;
+            // Schedule the FabricImage.fromURL decode behind any other
+            // in-flight async mutation (paste, restore). Skipping the queue
+            // would reintroduce the race that wave-3 fixed — a concurrent
+            // undo could clear the canvas while we're still decoding, and
+            // the blur would land on the freshly-restored state.
+            void queueMutation(async () => {
+              const c = canvasRef.current;
+              if (!c) return;
+              const blurImage = await FabricImage.fromURL(dataUrl);
+              // Scale the natural-resolution pixelated crop down into the
+              // clipped display rect's display dimensions. Without this the
+              // blur would render at natural-pixel size on the canvas and
+              // visually overshoot the source Image's resized footprint.
+              const finalScaleX = clipWidth / (blurImage.width ?? clipWidth);
+              const finalScaleY = clipHeight / (blurImage.height ?? clipHeight);
+              blurImage.set({
+                left: blurLeft,
+                top: blurTop,
+                scaleX: finalScaleX,
+                scaleY: finalScaleY,
+                data: { kind: 'blur' },
+              });
+              addFinalObject(blurImage);
+            });
           } else {
             // Arrow: drop preview line+head, build the final polygon arrow if
             // the drag was long enough to look intentional. <10px is treated
@@ -762,19 +975,6 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onHasImagesChange(imageObjects(canvas).length > 0);
       fitCanvasToViewport();
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
-    };
-
-    // Schedule any async canvas mutation behind the previous one. Used by
-    // `addImage` and by `undo`/`redo` (via `restoreHistory`). See the
-    // mutationQueueRef declaration for the race shapes this prevents.
-    const queueMutation = <T,>(op: () => Promise<T>): Promise<T> => {
-      const previous = mutationQueueRef.current;
-      const next = previous.then(op);
-      mutationQueueRef.current = next.then(
-        () => undefined,
-        () => undefined,
-      );
-      return next;
     };
 
     useImperativeHandle(

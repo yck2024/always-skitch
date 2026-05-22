@@ -32,9 +32,10 @@ const FREEFORM_TOOLS: Array<{ tool: Tool; label: string }> = [
   { tool: 'rectangle', label: 'Rectangle' },
   { tool: 'text', label: 'Text' },
   { tool: 'callout', label: 'Step' },
-  // Blur is stubbed and disabled — owned by issue #8 because of its per-Image
-  // behavior. Showing it disabled tells the user the tool exists in the family
-  // without pretending it works yet.
+  // Blur lives at the end of the drawing-tool group. Per-Image semantics
+  // (ADR-0005 / issue #8) — cursor management and start-on-Image gating
+  // happen in CanvasEditor; from the toolbar's perspective it's just another
+  // sticky drawing tool that requires `hasImages`.
   { tool: 'blur', label: 'Blur' },
 ];
 
@@ -158,6 +159,11 @@ export default function FreeformApp() {
         } else if (key === 's') {
           event.preventDefault();
           setActiveTool('callout');
+        } else if (key === 'b') {
+          // Blur shortcut (#8). Matches Skitch's `b` binding so muscle
+          // memory transfers between the two products.
+          event.preventDefault();
+          setActiveTool('blur');
         }
       }
     };
@@ -190,10 +196,11 @@ export default function FreeformApp() {
               type="button"
               className={activeTool === tool ? 'active' : ''}
               // Drawing tools require an Image on the Canvas; Select is always
-              // available. Blur stays disabled in this slice (issue #8).
-              disabled={(tool !== 'select' && !hasImages) || tool === 'blur'}
+              // available. Blur (#8) is now live — same gating as other
+              // drawing tools.
+              disabled={tool !== 'select' && !hasImages}
               onClick={() => setActiveTool(tool)}
-              title={tool === 'blur' ? 'Blur (coming soon)' : label}
+              title={label}
             >
               {label}
             </button>
