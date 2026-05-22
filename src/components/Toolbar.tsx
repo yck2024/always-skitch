@@ -52,11 +52,6 @@ export function Toolbar({
 }: ToolbarProps) {
   return (
     <header className="toolbar" aria-label="Mini Skitch toolbar">
-      <div className="brand">
-        <span className="brand-mark">↗</span>
-        <span>Mini Skitch</span>
-      </div>
-
       <div className="toolbar-group">
         <button className="primary" type="button" onClick={onPaste}>
           Paste Image

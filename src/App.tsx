@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CanvasEditor, type CanvasEditorHandle } from './components/CanvasEditor';
 import { Toolbar } from './components/Toolbar';
+import { TopNav } from './components/TopNav';
 import { DEFAULT_COLOR } from './palette';
 import type { ToastMessage, Tool } from './types';
 import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from './utils/clipboard';
@@ -164,6 +165,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <TopNav />
       <Toolbar
         activeTool={activeTool}
         activeColor={activeColor}

@@ -10,4 +10,4 @@ Five canonical roles using their default label names (`needs-triage`, `needs-inf
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` at the repo root + ADRs under `.agents/config/adr/`. See `.agents/config/domain.md`.
+Multi-context: see [CONTEXT-MAP.md](./CONTEXT-MAP.md) for the two-context layout (Skitch + Freeform). System-wide ADRs at `.agents/config/adr/`; per-context ADRs at `src/<context>/docs/adr/`. See `.agents/config/domain.md`.

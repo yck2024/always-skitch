@@ -1,4 +1,6 @@
-# Always Skitch
+# Always Skitch — single-image context
+
+This context covers the single-screenshot annotation flow at `/`. The multi-image experience at `/freeform` has its own context — see [CONTEXT-MAP.md](./CONTEXT-MAP.md).
 
 A static, browser-only image annotation app for marking up screenshots with bold, opinionated Skitch-style red annotations.
 

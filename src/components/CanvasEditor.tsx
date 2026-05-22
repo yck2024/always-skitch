@@ -194,6 +194,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   ref,
 ) {
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasShellRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<Canvas | null>(null);
   const backgroundElementRef = useRef<HTMLImageElement | null>(null);
   const drawingRef = useRef<DrawingState | null>(null);
@@ -212,9 +213,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const naturalWidth = element.naturalWidth;
     const naturalHeight = element.naturalHeight;
     if (!naturalWidth || !naturalHeight) return;
-    // Keep these aligned with .canvas-wrap.visible max-width/max-height in styles.css.
-    const maxWidth = Math.max(1, window.innerWidth - 64);
-    const maxHeight = Math.max(1, window.innerHeight - 150);
+    // Derive the available size from the flex container (.canvas-shell) so the
+    // canvas adapts to whatever chrome sits above it. Previously this used
+    // `window.innerHeight - 150` — a hardcoded budget for a single toolbar that
+    // silently broke when TopNav was added. The wrapper's getBoundingClientRect
+    // already reflects flexbox-derived height, so no magic numbers needed.
+    const shell = canvasShellRef.current;
+    const rect = shell?.getBoundingClientRect();
+    const fallbackWidth = Math.max(1, window.innerWidth - 64);
+    const fallbackHeight = Math.max(1, window.innerHeight - 150);
+    const maxWidth = rect && rect.width > 0 ? rect.width : fallbackWidth;
+    const maxHeight = rect && rect.height > 0 ? rect.height : fallbackHeight;
     const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
     displayScaleRef.current = scale;
     canvas.setDimensions({ width: naturalWidth * scale, height: naturalHeight * scale });
@@ -586,7 +595,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   }));
 
   return (
-    <section className="canvas-shell" aria-label="Annotation canvas">
+    <section className="canvas-shell" aria-label="Annotation canvas" ref={canvasShellRef}>
       {!imageDataUrl ? (
         <div className="empty-state">
           <div className="empty-icon">⌘V</div>
