@@ -8,21 +8,14 @@ import { FreeformCanvasEditor, type FreeformCanvasEditorHandle } from './CanvasE
 
 // Freeform is the multi-image annotation board at /freeform. See
 // src/freeform/CONTEXT.md (Canvas/Image/Annotation glossary) and ADR 0002
-// (separate route, not mode toggle). This slice (#6) adds the drawing tools
-// (arrow, rectangle, text, step callout) plus the Active color picker on top
-// of #5's additive paste foundation.
+// (separate route, not mode toggle). Wave 3 integrates #6 (annotations) +
+// #7 (Image select/drag/resize/delete) + #9 (Canvas color) on top of #5's
+// additive paste foundation.
 //
 // Key divergence from Skitch: NO useEffect that resets activeColor on paste.
 // Skitch resets to red per Background; Freeform Canvas spans multiple pastes
 // so the user's color choice must persist. (See ADR-0003 + the CONTEXT.md
 // Active color rule.)
-//
-// Toolbar layout NOTE for parallel agents: #7 (Image select/drag/resize) and
-// #9 (Canvas color picker) also touch this file. The toolbar is intentionally
-// linear and additive — we append a Tools group and Color picker after the
-// existing Paste/Undo/Redo group rather than reorganizing them. Future agents
-// should keep appending in the same spirit until someone consciously decides
-// to extract a shared component.
 const FREEFORM_TOOLS: Array<{ tool: Tool; label: string }> = [
   { tool: 'select', label: 'Select' },
   { tool: 'arrow', label: 'Arrow' },
@@ -42,7 +35,9 @@ export default function FreeformApp() {
   const [canRedo, setCanRedo] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   // Default to Select so the first paste isn't met with a sticky drawing tool
-  // active. Matches the "open Freeform → paste → look around" flow.
+  // active. Matches the "open Freeform → paste → look around" flow. With #7
+  // integrated, Select also makes Images draggable/resizable; with a drawing
+  // tool active, Images become non-interactive (clicks start a draw).
   const [activeTool, setActiveTool] = useState<Tool>('select');
   // Active color is App-state (not Canvas-state) because it persists across
   // pastes and isn't part of undo history. DEFAULT_COLOR is red — the Skitch
@@ -117,11 +112,18 @@ export default function FreeformApp() {
       } else if (meta && key === 'y' && !isEditingText) {
         event.preventDefault();
         editorRef.current?.redo();
+      } else if ((event.key === 'Backspace' || event.key === 'Delete') && !isEditingText) {
+        // Delete / Backspace removes selected Images (#7). The editor's
+        // `deleteSelected` filters to Image-kind objects, so this is a no-op
+        // when nothing is selected or only Annotations are. Annotations on
+        // top of the deleted Image stay (ADR-0003).
+        event.preventDefault();
+        editorRef.current?.deleteSelected();
       } else if (event.key === 'Escape' && !isEditingText) {
         // Esc bails out of any drawing tool back to Select. Matches Skitch.
         setActiveTool('select');
       } else if (!meta && !isEditingText) {
-        // Single-key tool shortcuts, mirroring Skitch's bindings so muscle
+        // Single-key tool shortcuts (#6), mirroring Skitch's bindings so muscle
         // memory transfers between the two products.
         if (key === 'v') {
           event.preventDefault();
@@ -153,19 +155,15 @@ export default function FreeformApp() {
   return (
     <div className="app">
       <TopNav />
-      {/* Freeform toolbar. Keeps the linear layout from #5 and appends a Tools
-          group + Color picker. We deliberately do NOT reuse Skitch's Toolbar
-          component, which is bound to Skitch's tool set, single-image model,
-          and per-Background color reset. */}
+      {/* Freeform toolbar. Wave-3 order, left to right:
+            Paste Image | Tools group | Active color | Canvas color (added in #9)
+            | Undo | Redo | Delete
+          We deliberately do NOT reuse Skitch's Toolbar component, which is
+          bound to Skitch's tool set, single-image model, and per-Background
+          color reset. */}
       <div className="toolbar" role="toolbar" aria-label="Freeform actions">
         <button type="button" className="primary" onClick={handlePasteButton}>
           Paste Image
-        </button>
-        <button type="button" onClick={() => editorRef.current?.undo()} disabled={!canUndo}>
-          Undo
-        </button>
-        <button type="button" onClick={() => editorRef.current?.redo()} disabled={!canRedo}>
-          Redo
         </button>
         <div className="toolbar-group" role="group" aria-label="Annotation tools">
           {FREEFORM_TOOLS.map(({ tool, label }) => (
@@ -182,25 +180,36 @@ export default function FreeformApp() {
               {label}
             </button>
           ))}
-          <ColorPicker
-            palette={PALETTE}
-            value={activeColor}
-            open={colorPickerOpen}
-            disabled={!hasImages}
-            onChange={handleColorChange}
-            onOpenChange={setColorPickerOpen}
-          />
         </div>
+        <ColorPicker
+          palette={PALETTE}
+          value={activeColor}
+          open={colorPickerOpen}
+          disabled={!hasImages}
+          onChange={handleColorChange}
+          onOpenChange={setColorPickerOpen}
+        />
+        <button type="button" onClick={() => editorRef.current?.undo()} disabled={!canUndo}>
+          Undo
+        </button>
+        <button type="button" onClick={() => editorRef.current?.redo()} disabled={!canRedo}>
+          Redo
+        </button>
+        {/* Delete button mirrors the Backspace/Delete keyboard shortcut. The
+            editor filters to Image-kind selected objects and no-ops if none. */}
+        <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasImages}>
+          Delete
+        </button>
       </div>
       <main className="workspace">
         <FreeformCanvasEditor
           ref={editorRef}
           hasImages={hasImages}
+          activeTool={activeTool}
+          activeColor={activeColor}
           onHasImagesChange={setHasImages}
           onHistoryChange={handleHistoryChange}
           onToast={showToast}
-          activeTool={activeTool}
-          activeColor={activeColor}
           onToolChange={setActiveTool}
         />
       </main>

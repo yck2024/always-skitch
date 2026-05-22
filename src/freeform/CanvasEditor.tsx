@@ -55,13 +55,11 @@ interface CanvasEditorProps {
   // the empty-state vs canvas display in the parent; the canvas itself is the
   // source of truth for object count.
   hasImages: boolean;
-  onHasImagesChange: (hasImages: boolean) => void;
-  onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
-  onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
   // Currently-selected tool. Drives mouse-handler behavior and selectability of
-  // existing annotations: in Select mode they're interactive; in any drawing
-  // mode they're frozen so clicks start new shapes instead of grabbing old ones
-  // (with a click-on-existing-annotation escape — see handleMouseDown).
+  // existing Images AND annotations: in Select mode both are interactive; in
+  // any drawing mode they're frozen so clicks start new shapes instead of
+  // grabbing old ones (with a click-on-existing-annotation escape — see
+  // handleMouseDown).
   activeTool: Tool;
   // Active pen color for new annotations. Lives in App.tsx state so it persists
   // across pastes (ADR-0003 / CONTEXT divergence from Skitch). Recolor of the
@@ -69,6 +67,9 @@ interface CanvasEditorProps {
   // NOT via this prop changing — that way we don't re-fire recolor on every
   // unrelated render.
   activeColor: string;
+  onHasImagesChange: (hasImages: boolean) => void;
+  onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
+  onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
   // Called when the editor wants to switch tools itself — e.g., click on an
   // existing annotation while a drawing tool is active escapes to Select.
   onToolChange: (tool: Tool) => void;
@@ -79,6 +80,11 @@ export interface FreeformCanvasEditorHandle {
   undo: () => void;
   redo: () => void;
   recolorSelected: (color: string) => void;
+  // Remove every selected Image from the canvas. Annotations on top of a
+  // deleted Image stay (ADR-0003: canvas-level annotations). The filter is
+  // defensive so a future Annotation selection model can't accidentally
+  // vacuum them up.
+  deleteSelected: () => void;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
@@ -103,12 +109,29 @@ function freeformObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind !== undefined);
 }
 
+// Apply per-Image interaction defaults: hide the middle (side) scaling handles
+// and the rotation handle so only corner resize is offered. The aspect-ratio
+// lock during corner resize is handled at the Canvas level (uniformScaling:
+// true, uniScaleKey: 'shiftKey') — the Image itself doesn't need lockScaling
+// flags. Called in two places: when a new Image is added, and after history
+// restore (because `_controlsVisibility` is an instance field that isn't
+// captured by Fabric's serialization).
+function applyImageInteractionDefaults(image: FabricObject) {
+  image.setControlsVisibility({
+    mt: false,
+    mb: false,
+    ml: false,
+    mr: false,
+    mtr: false,
+  });
+}
+
 // Skitch filters out the background singleton when serializing. Freeform has no
 // such thing — every tagged object on the canvas is part of user state. We
 // include `selectable`/`evented` in the prop list so per-object interaction
-// flags round-trip through history restore (otherwise undo would silently
-// re-flip these to Fabric defaults when downstream slices make Images
-// draggable). `data` carries our kind tag.
+// flags round-trip through history restore. `data` carries our kind tag. The
+// per-Image `_controlsVisibility` settings are NOT serialized by Fabric, so
+// `restoreHistory` reapplies them via `applyImageInteractionDefaults`.
 function serializeAll(canvas: Canvas): string {
   return JSON.stringify(canvas.getObjects().map((object) => object.toObject(['data', 'selectable', 'evented'])));
 }
@@ -219,7 +242,7 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
 
 export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, CanvasEditorProps>(
   function FreeformCanvasEditor(
-    { hasImages, onHasImagesChange, onHistoryChange, onToast, activeTool, activeColor, onToolChange },
+    { hasImages, activeTool, activeColor, onHasImagesChange, onHistoryChange, onToast, onToolChange },
     ref,
   ) {
     const canvasElRef = useRef<HTMLCanvasElement | null>(null);
@@ -330,16 +353,20 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
     };
 
-    // Apply selectable/evented to existing annotations based on the current
-    // tool. Called on every tool change so annotations become draggable only in
-    // Select mode. Image objects stay selectable=false (issue #7 territory).
-    const syncAnnotationInteractivity = (canvas: Canvas, tool: Tool) => {
-      canvas.selection = tool === 'select';
-      annotationObjects(canvas).forEach((object) => {
-        object.selectable = tool === 'select';
-        object.evented = tool === 'select';
+    // Unified interactivity sync: apply selectable/evented to BOTH Images
+    // (concern from #7) AND annotations (concern from #6) based on the current
+    // tool. In Select mode every Freeform object is interactive; in any drawing
+    // mode they're frozen so a drag starts a new annotation instead of moving
+    // or grabbing an existing object. Per principles 3 & 8 of the wave-3
+    // integration brief: one sync, both kinds.
+    const syncObjectInteractivity = (canvas: Canvas, tool: Tool) => {
+      const isSelect = tool === 'select';
+      canvas.selection = isSelect;
+      freeformObjects(canvas).forEach((object) => {
+        object.selectable = isSelect;
+        object.evented = isSelect;
       });
-      if (tool !== 'select') {
+      if (!isSelect) {
         canvas.discardActiveObject();
       }
       canvas.requestRenderAll();
@@ -348,7 +375,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     useEffect(() => {
       activeToolRef.current = activeTool;
       const canvas = canvasRef.current;
-      if (canvas) syncAnnotationInteractivity(canvas, activeTool);
+      if (canvas) syncObjectInteractivity(canvas, activeTool);
     }, [activeTool]);
 
     useEffect(() => {
@@ -362,7 +389,16 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // doesn't leave the marquee active until the user toggles.
       const canvas = new Canvas(canvasElRef.current, {
         preserveObjectStacking: true,
+        // Group-selection marquee follows the active tool. Only the Select
+        // tool turns it on; drawing tools keep it off so a drag starts a draw,
+        // not a marquee.
         selection: activeToolRef.current === 'select',
+        // Fabric v7 defaults: uniformScaling true, uniScaleKey 'shiftKey'.
+        // Repeated here explicitly so the aspect-lock-by-default + Shift-to-
+        // free-resize contract is visible at the call site and survives any
+        // future Fabric default flip. Owned by issue #7's corner-resize spec.
+        uniformScaling: true,
+        uniScaleKey: 'shiftKey',
       });
       canvasRef.current = canvas;
 
@@ -416,6 +452,9 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // and pick the object up instead of stacking a new annotation on top.
         // Annotations are evented=false while a drawing tool is active, so
         // Fabric's own hit-test won't see them — we walk them manually.
+        // NOTE (wave 3): we intentionally only check `annotationObjects`, not
+        // Images. Clicking an Image while a drawing tool is active starts a
+        // new drawing on top (per principle 5 of the integration brief).
         const hit = annotationObjects(canvas).find((object) => object.containsPoint(pointer));
         if (hit) {
           activeToolRef.current = 'select';
@@ -539,12 +578,32 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         }
       };
 
+      // Clamp Image position so the user can't drag an Image into negative
+      // coordinate space (#7). Per issue #7 MVP scope, the Canvas only grows
+      // down/right — never up/left of origin. Annotations (#6) are
+      // intentionally NOT clamped: a callout near an Image's top-left edge
+      // legitimately lands slightly off-origin because of its centered origin.
+      const handleObjectMoving = (event: { target?: FabricObject }) => {
+        const target = event.target as TaggedObject | undefined;
+        if (!target || target.data?.kind !== 'image') return;
+        if ((target.left ?? 0) < 0) target.set('left', 0);
+        if ((target.top ?? 0) < 0) target.set('top', 0);
+      };
+
+      // History on user-driven mutations: drag, resize, rotate
+      // (object:modified); typing into a text annotation (text:changed).
+      // After object:modified the bounding box may have grown or shrunk, so
+      // re-fit. fitCanvasToViewport is idempotent.
+      const handleObjectModified = () => {
+        saveHistorySnapshot();
+        fitCanvasToViewport();
+      };
+
       canvas.on('mouse:down', handleMouseDown);
       canvas.on('mouse:move', handleMouseMove);
       canvas.on('mouse:up', handleMouseUp);
-      // History on user-driven mutations of existing annotations: drag, resize,
-      // rotate (object:modified); typing into a text annotation (text:changed).
-      canvas.on('object:modified', saveHistorySnapshot);
+      canvas.on('object:moving', handleObjectMoving);
+      canvas.on('object:modified', handleObjectModified);
       canvas.on('text:changed', saveHistorySnapshot);
 
       return () => {
@@ -586,22 +645,29 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // calling it on a state with N images is O(N) reloads. For typical
       // Freeform sessions (handful of images) this is fine. If pasted-image
       // counts grow large we may want a structural undo log instead.
+      canvas.discardActiveObject();
       canvas.getObjects().forEach((object) => canvas.remove(object));
       const parsed = JSON.parse(state) as Record<string, unknown>[];
       const objects = await util.enlivenObjects(parsed);
       if (mySeq !== restoreSeqRef.current) return;
       // `selectable`/`evented` are serialized into the snapshot (see
       // `serializeAll`), so the enlivened objects round-trip those flags
-      // naturally — no per-object override needed here. This matters once
-      // downstream slices make Images draggable: without round-trip, undo
-      // would silently re-disable interaction.
-      objects.forEach((object) => canvas.add(object as FabricObject));
-      // Re-apply the current tool's interactivity rules: a snapshot might have
-      // been saved while a drawing tool was active (annotations frozen), but
-      // we should restore in the context of the CURRENT tool. Without this,
-      // undoing back to a state recorded mid-draw leaves annotations frozen
-      // even after the user switches to Select.
-      syncAnnotationInteractivity(canvas, activeToolRef.current);
+      // naturally. `_controlsVisibility` (set via setControlsVisibility) is
+      // NOT serialized — it's an instance field Fabric ignores. Re-apply the
+      // hidden-side-handle defaults to every Image-kind object so undo/redo
+      // doesn't resurrect the mid-side stretch handles (#7 concern).
+      objects.forEach((object) => {
+        canvas.add(object as FabricObject);
+        if ((object as TaggedObject).data?.kind === 'image') {
+          applyImageInteractionDefaults(object as FabricObject);
+        }
+      });
+      // Reconcile selectable/evented with the current active tool: a snapshot
+      // captured while the Select tool was active will round-trip selectable=
+      // true, but if the user has since switched to a drawing tool we want
+      // restored Images AND annotations to be non-interactive. Single unified
+      // sync (principle 8 of the wave-3 brief).
+      syncObjectInteractivity(canvas, activeToolRef.current);
       canvas.requestRenderAll();
       restoringRef.current = false;
       onHasImagesChange(imageObjects(canvas).length > 0);
@@ -645,17 +711,22 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // a future "export at full resolution" feature can still recover the
             // original pixels.
             const scale = naturalWidth > MAX_PASTE_WIDTH ? MAX_PASTE_WIDTH / naturalWidth : 1;
+            const isSelect = activeToolRef.current === 'select';
             image.set({
               left: nextImageLeft(canvas),
               top: 0,
               scaleX: scale,
               scaleY: scale,
-              selectable: false,
-              evented: false,
-              hasControls: false,
-              hasBorders: false,
+              // Pasted Images are interactive when Select is active (#7). When
+              // a drawing tool (#6) is active they become non-interactive so a
+              // drag-on-Image starts a draw on top of it. The unified
+              // syncObjectInteractivity effect keeps this in sync as the tool
+              // toggles after paste.
+              selectable: isSelect,
+              evented: isSelect,
               data: { kind: 'image' },
             });
+            applyImageInteractionDefaults(image);
             canvas.add(image);
             // Layer invariant (ADR-0003 layer rule): every Image renders below
             // every Annotation, regardless of paste/draw order. Without this,
@@ -701,6 +772,26 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           if (activeObjects.length === 0) return;
           activeObjects.forEach((object) => recolorAnnotation(object, color));
           canvas.requestRenderAll();
+          saveHistorySnapshot();
+        },
+        deleteSelected: () => {
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          // Scope deletion to Image-kind objects (#7). Annotations on top of a
+          // deleted Image are explicitly preserved per ADR-0003: they're
+          // canvas-level, not bound to any Image. When Annotation selection
+          // becomes its own concern, this filter is the right place to widen.
+          const targets = canvas
+            .getActiveObjects()
+            .filter((object) => (object as TaggedObject).data?.kind === 'image');
+          if (targets.length === 0) return;
+          targets.forEach((object) => canvas.remove(object));
+          canvas.discardActiveObject();
+          canvas.requestRenderAll();
+          onHasImagesChange(imageObjects(canvas).length > 0);
+          fitCanvasToViewport();
+          // `object:modified` doesn't fire on remove, so we push the snapshot
+          // here. (The Skitch path does the equivalent.)
           saveHistorySnapshot();
         },
       }),
