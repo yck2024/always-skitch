@@ -1,5 +1,22 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { Canvas, FabricImage, FabricObject, Point, util } from 'fabric';
+import {
+  Canvas,
+  Circle,
+  FabricImage,
+  FabricObject,
+  Group,
+  Line,
+  Point,
+  Polygon,
+  Rect,
+  Shadow,
+  Text,
+  Textbox,
+  Triangle,
+  util,
+} from 'fabric';
+import type { Tool } from '../types';
+import { recolorAnnotation } from '../utils/colors';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
 // globally in src/components/CanvasEditor.tsx. We rely on that here. If a user
@@ -16,6 +33,22 @@ FabricObject.ownDefaults.originY = 'top';
 const MAX_PASTE_WIDTH = 800;
 // Horizontal gap between adjacent pasted Images in the auto-row layout.
 const PASTE_GAP = 24;
+// Annotation visual constants — these mirror Skitch's exactly so annotations
+// drawn in Freeform look identical to ones drawn in Skitch. Duplication is
+// intentional: extracting a shared module risks coupling the two editors
+// before we know whether they'll diverge (e.g., Freeform might want different
+// arrow proportions for multi-image flows). For now, parallel constants beat
+// premature abstraction.
+const STROKE_WIDTH = 8;
+const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
+const FONT_SIZE = 32;
+const CALLOUT_SIZE = 42;
+
+// Drawing state for mouse-drag tools (arrow, rectangle). Click-place tools
+// (text, callout) finalize immediately so they don't appear here.
+type DrawingState =
+  | { kind: 'rectangle'; startX: number; startY: number; object: Rect }
+  | { kind: 'arrow'; startX: number; startY: number; line: Line; head: Triangle };
 
 interface CanvasEditorProps {
   // True when the parent thinks at least one Image is on the canvas. Drives
@@ -25,23 +58,35 @@ interface CanvasEditorProps {
   onHasImagesChange: (hasImages: boolean) => void;
   onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
+  // Currently-selected tool. Drives mouse-handler behavior and selectability of
+  // existing annotations: in Select mode they're interactive; in any drawing
+  // mode they're frozen so clicks start new shapes instead of grabbing old ones
+  // (with a click-on-existing-annotation escape — see handleMouseDown).
+  activeTool: Tool;
+  // Active pen color for new annotations. Lives in App.tsx state so it persists
+  // across pastes (ADR-0003 / CONTEXT divergence from Skitch). Recolor of the
+  // current selection is driven via the imperative `recolorSelected` method,
+  // NOT via this prop changing — that way we don't re-fire recolor on every
+  // unrelated render.
+  activeColor: string;
+  // Called when the editor wants to switch tools itself — e.g., click on an
+  // existing annotation while a drawing tool is active escapes to Select.
+  onToolChange: (tool: Tool) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
   addImage: (dataUrl: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
+  recolorSelected: (color: string) => void;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
-// (selection, deletion, recolor) can discriminate Image vs Annotation. For this
-// slice, only 'image' exists — annotations land in #6 and beyond.
+// (selection, deletion, recolor) can discriminate Image vs Annotation. Image is
+// the only non-annotation kind today; anything else with a `data.kind` set is
+// an Annotation by elimination.
 type TaggedObject = FabricObject & { data?: { kind?: string } };
 
-// Image is the only tagged kind today. Anything else with a `data.kind` set is
-// an Annotation by elimination. We deliberately do NOT enumerate annotation
-// kinds here — annotations will be added incrementally in #6/#8 and we want
-// this helper to keep working without edits each time a new kind lands.
 function imageObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind === 'image');
 }
@@ -84,8 +129,99 @@ function nextImageLeft(canvas: Canvas): number {
   return maxRight + PASTE_GAP;
 }
 
+// Skitch-style tapered arrow: a single polygon with a pointy tail, narrow body,
+// and a wide triangular head. Points are pre-rotated so we don't have to fight
+// Fabric's bbox-rotation pivot. Lifted from src/components/CanvasEditor.tsx —
+// kept as a local helper rather than imported because Freeform may diverge
+// (e.g., a future zoom-aware arrow could behave differently per Image).
+function makeArrow(color: string, scale: number, startX: number, startY: number, endX: number, endY: number) {
+  const dx = endX - startX;
+  const dy = endY - startY;
+  const length = Math.hypot(dx, dy);
+  const radians = Math.atan2(dy, dx);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const rotate = (x: number, y: number) => ({
+    x: startX + x * cos - y * sin,
+    y: startY + x * sin + y * cos,
+  });
+  const rawHeadLen = Math.min(Math.max(length * 0.22, 24 * scale), 80 * scale);
+  const headLen = Math.min(rawHeadLen, length * 0.4);
+  const headHalf = headLen * 0.42;
+  const bodyHalf = Math.max(headHalf * 0.32, 4 * scale);
+  const bodyEnd = Math.max(0, length - headLen);
+  const points = [
+    rotate(0, 0),
+    rotate(bodyEnd, bodyHalf),
+    rotate(bodyEnd, headHalf),
+    rotate(length, 0),
+    rotate(bodyEnd, -headHalf),
+    rotate(bodyEnd, -bodyHalf),
+  ];
+  const polygon = new Polygon(points, {
+    fill: color,
+    strokeLineJoin: 'round',
+  });
+  polygon.set('data', { kind: 'arrow' });
+  return polygon;
+}
+
+function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: number, endX: number, endY: number) {
+  const dx = endX - startX;
+  const dy = endY - startY;
+  line.set({ x2: endX, y2: endY });
+  head.set({ left: endX, top: endY, angle: (Math.atan2(dy, dx) * 180) / Math.PI + 90 });
+}
+
+function makeText(color: string, scale: number, left: number, top: number) {
+  return new Textbox('Text', {
+    left,
+    top,
+    width: 260 * scale,
+    fill: color,
+    stroke: '#ffffff',
+    strokeWidth: 2.5 * scale,
+    paintFirst: 'stroke',
+    shadow: new Shadow({ color: 'rgba(0,0,0,0.35)', offsetX: 2 * scale, offsetY: 2 * scale, blur: 3 * scale }),
+    fontFamily: FONT_FAMILY,
+    fontSize: FONT_SIZE * scale,
+    fontWeight: 900,
+    editable: true,
+    data: { kind: 'text' },
+  });
+}
+
+function makeCallout(color: string, scale: number, left: number, top: number, number: number) {
+  const size = CALLOUT_SIZE * scale;
+  const circle = new Circle({
+    radius: size / 2,
+    fill: color,
+    stroke: '#ffffff',
+    strokeWidth: 3 * scale,
+    originX: 'center',
+    originY: 'center',
+  });
+  const label = new Text(String(number), {
+    fill: '#ffffff',
+    fontFamily: FONT_FAMILY,
+    fontSize: 24 * scale,
+    fontWeight: 900,
+    originX: 'center',
+    originY: 'center',
+  });
+  const group = new Group([circle, label], {
+    left: left - size / 2,
+    top: top - size / 2,
+  });
+  group.set('data', { kind: 'callout' });
+  return group;
+}
+
 export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, CanvasEditorProps>(
-  function FreeformCanvasEditor({ hasImages, onHasImagesChange, onHistoryChange, onToast }, ref) {
+  function FreeformCanvasEditor(
+    { hasImages, onHasImagesChange, onHistoryChange, onToast, activeTool, activeColor, onToolChange },
+    ref,
+  ) {
     const canvasElRef = useRef<HTMLCanvasElement | null>(null);
     const canvasShellRef = useRef<HTMLElement | null>(null);
     const canvasRef = useRef<Canvas | null>(null);
@@ -113,6 +249,17 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // App.tsx) reserve sequential row positions in invocation order rather
     // than in decode-completion order. See SHOULD-FIX #3 in the branch notes.
     const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+    // Mirrors of activeTool / activeColor so mouse handlers (closed over inside
+    // the canvas-setup effect) always see the latest value without needing to
+    // re-bind handlers on every prop change. Matches Skitch's pattern.
+    const activeToolRef = useRef(activeTool);
+    const activeColorRef = useRef(activeColor);
+    // Active drag-tool state (arrow/rectangle). null between drags.
+    const drawingRef = useRef<DrawingState | null>(null);
+    // Step-callout counter. Starts at 1 on a fresh Canvas; increments across
+    // the whole Canvas (NOT per-Image, matching the spec). We deliberately do
+    // NOT reset on paste — Freeform's Canvas spans multiple Images.
+    const calloutNumberRef = useRef(1);
 
     // Auto-fit: scale the whole canvas so the bounding box of all visible
     // Freeform content (Images + Annotations) fits the viewport (the
@@ -171,15 +318,234 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.requestRenderAll();
     };
 
+    const saveHistorySnapshot = () => {
+      if (restoringRef.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const next = serializeAll(canvas);
+      const current = historyRef.current[historyIndexRef.current];
+      if (next === current) return;
+      historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
+      historyIndexRef.current = historyRef.current.length - 1;
+      onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
+    };
+
+    // Apply selectable/evented to existing annotations based on the current
+    // tool. Called on every tool change so annotations become draggable only in
+    // Select mode. Image objects stay selectable=false (issue #7 territory).
+    const syncAnnotationInteractivity = (canvas: Canvas, tool: Tool) => {
+      canvas.selection = tool === 'select';
+      annotationObjects(canvas).forEach((object) => {
+        object.selectable = tool === 'select';
+        object.evented = tool === 'select';
+      });
+      if (tool !== 'select') {
+        canvas.discardActiveObject();
+      }
+      canvas.requestRenderAll();
+    };
+
+    useEffect(() => {
+      activeToolRef.current = activeTool;
+      const canvas = canvasRef.current;
+      if (canvas) syncAnnotationInteractivity(canvas, activeTool);
+    }, [activeTool]);
+
+    useEffect(() => {
+      activeColorRef.current = activeColor;
+    }, [activeColor]);
+
     useEffect(() => {
       if (!canvasElRef.current) return;
 
+      // Seed selection from the current tool so a non-select initial tool
+      // doesn't leave the marquee active until the user toggles.
       const canvas = new Canvas(canvasElRef.current, {
         preserveObjectStacking: true,
-        // No selection in this slice — Images are not interactive yet.
-        selection: false,
+        selection: activeToolRef.current === 'select',
       });
       canvasRef.current = canvas;
+
+      // Inverse of displayScale: drawing a stroke that *looks* 8px wide on
+      // screen requires a scene-coordinate stroke of 8/zoom. Clamp the divisor
+      // so an extremely small zoom doesn't produce an absurdly thick stroke.
+      const annotationScale = () => 1 / Math.max(displayScaleRef.current, 0.25);
+
+      // Finalize a drawn annotation: add to canvas, snapshot history, optionally
+      // exit sticky mode. Sticky behavior matches Skitch: drawing tools stay
+      // active so the user can draw multiple shapes in a row; Select mode
+      // finalizes a single shape and re-selects it for tweaking.
+      const addFinalObject = (object: FabricObject) => {
+        const tool = activeToolRef.current;
+        const sticky = tool !== 'select';
+        // While sticky, finalized objects are non-interactive so the next click
+        // starts a new annotation instead of grabbing the previous one. Fabric
+        // IText edit mode uses a hidden textarea that ignores `evented`, so
+        // text still types and click-outside-to-exit still fires.
+        object.selectable = !sticky;
+        object.evented = !sticky;
+        if (!canvas.contains(object)) {
+          canvas.add(object);
+        }
+        if (!sticky) {
+          canvas.setActiveObject(object);
+        }
+        canvas.requestRenderAll();
+        saveHistorySnapshot();
+        if (!sticky) {
+          onToolChange('select');
+        }
+      };
+
+      type CanvasPointerEvent = Parameters<typeof canvas.getScenePoint>[0];
+      const pointerFromEvent = (event: { e: CanvasPointerEvent }) => canvas.getScenePoint(event.e);
+
+      const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
+        const tool = activeToolRef.current;
+        // Select mode is handled by Fabric's built-ins (drag, marquee). Only
+        // the drag-tools (arrow, rectangle) start a drawing here; click-place
+        // tools (text, callout) finalize in mouse:up below.
+        if (tool === 'select') return;
+        // Require at least one Image — drawing on an empty Canvas has no anchor
+        // and the auto-fit logic relies on at least one Image being present.
+        if (imageObjects(canvas).length === 0) return;
+        const pointer = pointerFromEvent(event);
+
+        // Click-on-existing-annotation escape: if the click lands on an
+        // existing annotation while a drawing tool is active, switch to Select
+        // and pick the object up instead of stacking a new annotation on top.
+        // Annotations are evented=false while a drawing tool is active, so
+        // Fabric's own hit-test won't see them — we walk them manually.
+        const hit = annotationObjects(canvas).find((object) => object.containsPoint(pointer));
+        if (hit) {
+          activeToolRef.current = 'select';
+          hit.selectable = true;
+          hit.evented = true;
+          canvas.setActiveObject(hit);
+          canvas.requestRenderAll();
+          onToolChange('select');
+          return;
+        }
+
+        const scale = annotationScale();
+        const color = activeColorRef.current;
+
+        if (tool === 'rectangle') {
+          const rect = new Rect({
+            left: pointer.x,
+            top: pointer.y,
+            width: 1,
+            height: 1,
+            fill: 'transparent',
+            stroke: color,
+            strokeWidth: STROKE_WIDTH * scale,
+            rx: 5 * scale,
+            ry: 5 * scale,
+            data: { kind: 'rectangle' },
+          });
+          canvas.add(rect);
+          drawingRef.current = { kind: 'rectangle', startX: pointer.x, startY: pointer.y, object: rect };
+        } else if (tool === 'arrow') {
+          // While dragging we draw a cheap line+triangle preview; the final
+          // polygon arrow is constructed in mouse:up. The preview is two
+          // primitives because they're trivial to update per frame.
+          const line = new Line([pointer.x, pointer.y, pointer.x, pointer.y], {
+            stroke: color,
+            strokeWidth: STROKE_WIDTH * scale,
+            strokeLineCap: 'round',
+            selectable: false,
+            evented: false,
+          });
+          const head = new Triangle({
+            left: pointer.x,
+            top: pointer.y,
+            width: 34 * scale,
+            height: 42 * scale,
+            fill: color,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+          });
+          canvas.add(line, head);
+          drawingRef.current = { kind: 'arrow', startX: pointer.x, startY: pointer.y, line, head };
+        }
+      };
+
+      const handleMouseMove = (event: { e: CanvasPointerEvent }) => {
+        const drawing = drawingRef.current;
+        if (!drawing) return;
+        const pointer = pointerFromEvent(event);
+        if (drawing.kind === 'rectangle') {
+          drawing.object.set({
+            left: Math.min(pointer.x, drawing.startX),
+            top: Math.min(pointer.y, drawing.startY),
+            width: Math.abs(pointer.x - drawing.startX),
+            height: Math.abs(pointer.y - drawing.startY),
+          });
+          // .set() updates the props but doesn't refresh aCoords, which Fabric
+          // uses for hit-testing. Without this, clicks on the finished rect
+          // miss because Fabric still thinks it's a 1x1 box at the start point.
+          drawing.object.setCoords();
+        } else {
+          updateArrowPreview(drawing.line, drawing.head, drawing.startX, drawing.startY, pointer.x, pointer.y);
+        }
+        canvas.requestRenderAll();
+      };
+
+      const handleMouseUp = (event: { e: CanvasPointerEvent }) => {
+        const drawing = drawingRef.current;
+        const tool = activeToolRef.current;
+        const pointer = pointerFromEvent(event);
+
+        if (drawing) {
+          drawingRef.current = null;
+          if (drawing.kind === 'rectangle') {
+            if ((drawing.object.width ?? 0) < 4 || (drawing.object.height ?? 0) < 4) {
+              canvas.remove(drawing.object);
+            } else {
+              addFinalObject(drawing.object);
+            }
+          } else {
+            // Arrow: drop preview line+head, build the final polygon arrow if
+            // the drag was long enough to look intentional. <10px is treated
+            // as a stray click.
+            canvas.remove(drawing.line, drawing.head);
+            if (Math.hypot(pointer.x - drawing.startX, pointer.y - drawing.startY) > 10) {
+              addFinalObject(
+                makeArrow(activeColorRef.current, annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y),
+              );
+            }
+          }
+          canvas.requestRenderAll();
+          return;
+        }
+
+        // No drag in progress — handle click-place tools (text, callout). We
+        // intentionally do NOT require a hit-test on an underlying Image: text
+        // and callouts are Canvas-level (ADR-0003), so dropping one in the gap
+        // between Images is allowed. We still require *some* Image on the
+        // canvas (otherwise the auto-fit anchor is gone).
+        if (imageObjects(canvas).length === 0) return;
+        const scale = annotationScale();
+        const color = activeColorRef.current;
+        if (tool === 'text') {
+          const text = makeText(color, scale, pointer.x, pointer.y);
+          addFinalObject(text);
+          text.enterEditing();
+          text.selectAll();
+        } else if (tool === 'callout') {
+          addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, calloutNumberRef.current++));
+        }
+      };
+
+      canvas.on('mouse:down', handleMouseDown);
+      canvas.on('mouse:move', handleMouseMove);
+      canvas.on('mouse:up', handleMouseUp);
+      // History on user-driven mutations of existing annotations: drag, resize,
+      // rotate (object:modified); typing into a text annotation (text:changed).
+      canvas.on('object:modified', saveHistorySnapshot);
+      canvas.on('text:changed', saveHistorySnapshot);
 
       return () => {
         canvas.dispose();
@@ -187,6 +553,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       };
       // Intentionally one-time setup. Callbacks captured via refs in handlers
       // so they don't need to be in deps.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -201,18 +568,6 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     useEffect(() => {
       if (hasImages) fitCanvasToViewport();
     }, [hasImages]);
-
-    const saveHistorySnapshot = () => {
-      if (restoringRef.current) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const next = serializeAll(canvas);
-      const current = historyRef.current[historyIndexRef.current];
-      if (next === current) return;
-      historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
-      historyIndexRef.current = historyRef.current.length - 1;
-      onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
-    };
 
     const restoreHistory = async (state: string) => {
       const canvas = canvasRef.current;
@@ -241,6 +596,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // downstream slices make Images draggable: without round-trip, undo
       // would silently re-disable interaction.
       objects.forEach((object) => canvas.add(object as FabricObject));
+      // Re-apply the current tool's interactivity rules: a snapshot might have
+      // been saved while a drawing tool was active (annotations frozen), but
+      // we should restore in the context of the CURRENT tool. Without this,
+      // undoing back to a state recorded mid-draw leaves annotations frozen
+      // even after the user switches to Select.
+      syncAnnotationInteractivity(canvas, activeToolRef.current);
       canvas.requestRenderAll();
       restoringRef.current = false;
       onHasImagesChange(imageObjects(canvas).length > 0);
@@ -296,11 +657,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
               data: { kind: 'image' },
             });
             canvas.add(image);
-            // Layer invariant: every Image renders below every Annotation,
-            // regardless of paste/draw order (ADR-0005 layer rule). Today there
-            // are no Annotations so this is a no-op; once #6 lands and the user
-            // can draw over existing Images, this prevents a freshly-pasted
-            // Image from covering the drawings on it.
+            // Layer invariant (ADR-0003 layer rule): every Image renders below
+            // every Annotation, regardless of paste/draw order. Without this,
+            // pasting a NEW Image after an Annotation was drawn would cover
+            // the drawing. sendObjectToBack puts the freshly-added Image at
+            // the bottom of the stack; existing Annotations stay on top.
             canvas.sendObjectToBack(image);
             canvas.requestRenderAll();
             // Inform parent BEFORE fitting: the canvas element only becomes
@@ -325,12 +686,30 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           historyIndexRef.current += 1;
           void restoreHistory(historyRef.current[historyIndexRef.current]);
         },
+        recolorSelected: (color: string) => {
+          // Recolor whatever is currently selected. Mirrors Skitch's behavior:
+          // changing Active color in the picker recolors the current selection
+          // (if any) AND becomes the pen for future annotations. The pen-color
+          // side lives in App.tsx state; this handle covers the selection
+          // side. Image objects are skipped — they aren't annotations and have
+          // no notion of color.
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const activeObjects = canvas
+            .getActiveObjects()
+            .filter((object) => (object as TaggedObject).data?.kind !== 'image');
+          if (activeObjects.length === 0) return;
+          activeObjects.forEach((object) => recolorAnnotation(object, color));
+          canvas.requestRenderAll();
+          saveHistorySnapshot();
+        },
       }),
       // Stable handle: the closures above read from refs and the latest props
       // via the callback identities below. Callbacks are stable in the parent
       // (useCallback), so this list is effectively constant — but listing them
       // keeps the React lint rule happy if/when that changes.
-      [onHasImagesChange, onHistoryChange, onToast],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [onHasImagesChange, onHistoryChange, onToast, onToolChange],
     );
 
     return (
