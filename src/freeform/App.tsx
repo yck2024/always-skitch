@@ -18,16 +18,14 @@ const CANVAS_COLOR_OPTIONS: { value: FreeformCanvasColor; label: string }[] = [
   { value: 'transparent', label: 'Transparent' },
 ];
 
-// Freeform is the multi-image annotation board at /freeform. See
-// src/freeform/CONTEXT.md (Canvas/Image/Annotation glossary) and ADR 0002
-// (separate route, not mode toggle). Wave 3 integrates #6 (annotations) +
-// #7 (Image select/drag/resize/delete) + #9 (Canvas color) on top of #5's
-// additive paste foundation.
+// Freeform is the multi-image annotation board at /freeform. Wave 3
+// integrates #6 (annotations) + #7 (Image select/drag/resize/delete) + #9
+// (Canvas color) on top of #5's additive paste foundation.
 //
 // Key divergence from Skitch: NO useEffect that resets activeColor on paste.
-// Skitch resets to red per Background; Freeform Canvas spans multiple pastes
-// so the user's color choice must persist. (See ADR-0003 + the CONTEXT.md
-// Active color rule.)
+// Skitch resets to red per Background because a Background swap is a fresh
+// session; Freeform's Canvas spans multiple pastes, so the user's color
+// choice must persist across them.
 const FREEFORM_TOOLS: Array<{ tool: Tool; label: string }> = [
   { tool: 'select', label: 'Select' },
   { tool: 'arrow', label: 'Arrow' },
@@ -60,6 +58,10 @@ export default function FreeformApp() {
   // no localStorage, no router. Defaults to 'white' on every fresh session.
   // Not pushed to history; switching is a setting, not an edit.
   const [canvasColor, setCanvasColor] = useState<FreeformCanvasColor>('white');
+  // Whether the canvas has at least one selected object. Drives the Delete
+  // button's enabled state — the operation is a no-op when nothing is
+  // selected, so the button should reflect that.
+  const [hasSelection, setHasSelection] = useState(false);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -232,8 +234,10 @@ export default function FreeformApp() {
           Redo
         </button>
         {/* Delete button mirrors the Backspace/Delete keyboard shortcut. The
-            editor filters to Image-kind selected objects and no-ops if none. */}
-        <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasImages}>
+            editor filters to Image-kind selected objects and no-ops if none —
+            so the button is only enabled when something is actually selected
+            on the canvas (driven by `onSelectionChange` from the editor). */}
+        <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
       </div>
@@ -248,6 +252,7 @@ export default function FreeformApp() {
           onHistoryChange={handleHistoryChange}
           onToast={showToast}
           onToolChange={setActiveTool}
+          onSelectionChange={setHasSelection}
         />
       </main>
 

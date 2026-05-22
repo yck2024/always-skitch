@@ -81,6 +81,10 @@ interface CanvasEditorProps {
   // Called when the editor wants to switch tools itself — e.g., click on an
   // existing annotation while a drawing tool is active escapes to Select.
   onToolChange: (tool: Tool) => void;
+  // Called when the active selection on the canvas changes. The parent uses
+  // this to enable/disable the Delete button (it should be enabled iff
+  // something is selected, not just whenever an Image exists).
+  onSelectionChange?: (hasSelection: boolean) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
@@ -250,7 +254,17 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
 
 export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, CanvasEditorProps>(
   function FreeformCanvasEditor(
-    { hasImages, activeTool, activeColor, canvasColor, onHasImagesChange, onHistoryChange, onToast, onToolChange },
+    {
+      hasImages,
+      activeTool,
+      activeColor,
+      canvasColor,
+      onHasImagesChange,
+      onHistoryChange,
+      onToast,
+      onToolChange,
+      onSelectionChange,
+    },
     ref,
   ) {
     const canvasElRef = useRef<HTMLCanvasElement | null>(null);
@@ -275,16 +289,25 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // (canvas is cleared BEFORE the await), corrupting history walks.
     const restoreSeqRef = useRef(0);
     const displayScaleRef = useRef(1);
-    // Paste queue. Each `addImage` waits for the previous one to finish before
-    // decoding so concurrent pastes (which fire as `void appendImageFile` in
-    // App.tsx) reserve sequential row positions in invocation order rather
-    // than in decode-completion order. See SHOULD-FIX #3 in the branch notes.
-    const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+    // Unified mutation queue. Serializes ALL async canvas mutations — paste
+    // applies AND history restores — so they can't interleave. Two race
+    // shapes this prevents:
+    //   1. A paste lands between `canvas.clear` and `enlivenObjects` inside
+    //      restore, ending up on a canvas the restore is about to repopulate.
+    //   2. An undo arrives mid-paste-decode, with the paste then committing
+    //      its image into the freshly-restored state.
+    // The existing `restoreSeqRef` guards stale restores within `restoreHistory`
+    // itself; this queue is additive and operates one level higher.
+    // `.catch(() => {})` keeps the chain alive when any single op rejects.
+    const mutationQueueRef = useRef<Promise<void>>(Promise.resolve());
     // Mirrors of activeTool / activeColor so mouse handlers (closed over inside
     // the canvas-setup effect) always see the latest value without needing to
     // re-bind handlers on every prop change. Matches Skitch's pattern.
     const activeToolRef = useRef(activeTool);
     const activeColorRef = useRef(activeColor);
+    // Same trick for the optional selection-change callback: the canvas-setup
+    // effect runs once, so we read through a ref to pick up identity changes.
+    const onSelectionChangeRef = useRef(onSelectionChange);
     // Active drag-tool state (arrow/rectangle). null between drags.
     const drawingRef = useRef<DrawingState | null>(null);
     // Step-callout counter. Starts at 1 on a fresh Canvas; increments across
@@ -375,7 +398,13 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         object.evented = isSelect;
       });
       if (!isSelect) {
+        const hadSelection = canvas.getActiveObjects().length > 0;
         canvas.discardActiveObject();
+        // Programmatic discardActiveObject doesn't always fire
+        // `selection:cleared` (Fabric reserves it for user interaction in
+        // some versions), so notify the parent directly when we know we
+        // just cleared a selection by switching off Select mode.
+        if (hadSelection) onSelectionChangeRef.current?.(false);
       }
       canvas.requestRenderAll();
     };
@@ -389,6 +418,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     useEffect(() => {
       activeColorRef.current = activeColor;
     }, [activeColor]);
+
+    useEffect(() => {
+      onSelectionChangeRef.current = onSelectionChange;
+    }, [onSelectionChange]);
 
     useEffect(() => {
       if (!canvasElRef.current) return;
@@ -436,6 +469,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         }
         canvas.requestRenderAll();
         saveHistorySnapshot();
+        // Refit immediately after committing the annotation. A callout placed
+        // near an Image corner uses centered origin and lands at a negative
+        // left/top (e.g., left = clickX - size/2); without a refit here the
+        // off-origin pixels render outside the visible bbox until some later
+        // action (drag, undo, resize) triggers a fit.
+        fitCanvasToViewport();
         if (!sticky) {
           onToolChange('select');
         }
@@ -607,12 +646,27 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         fitCanvasToViewport();
       };
 
+      // Selection-change bridge: the Delete button (and any future
+      // selection-aware UI) needs to know whether *anything* is selected on
+      // the canvas. Fabric fires selection:created when the first object is
+      // grabbed, selection:updated when the active selection swaps, and
+      // selection:cleared on discard. We collapse all three into a single
+      // boolean push.
+      const emitSelectionChange = () => {
+        const callback = onSelectionChangeRef.current;
+        if (!callback) return;
+        callback(canvas.getActiveObjects().length > 0);
+      };
+
       canvas.on('mouse:down', handleMouseDown);
       canvas.on('mouse:move', handleMouseMove);
       canvas.on('mouse:up', handleMouseUp);
       canvas.on('object:moving', handleObjectMoving);
       canvas.on('object:modified', handleObjectModified);
       canvas.on('text:changed', saveHistorySnapshot);
+      canvas.on('selection:created', emitSelectionChange);
+      canvas.on('selection:updated', emitSelectionChange);
+      canvas.on('selection:cleared', emitSelectionChange);
 
       return () => {
         canvas.dispose();
@@ -676,7 +730,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // calling it on a state with N images is O(N) reloads. For typical
       // Freeform sessions (handful of images) this is fine. If pasted-image
       // counts grow large we may want a structural undo log instead.
+      const hadSelection = canvas.getActiveObjects().length > 0;
       canvas.discardActiveObject();
+      // Programmatic discardActiveObject doesn't always fire `selection:cleared`,
+      // so push directly to the parent when we know a selection was dropped.
+      if (hadSelection) onSelectionChangeRef.current?.(false);
       canvas.getObjects().forEach((object) => canvas.remove(object));
       const parsed = JSON.parse(state) as Record<string, unknown>[];
       const objects = await util.enlivenObjects(parsed);
@@ -706,21 +764,33 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
     };
 
+    // Schedule any async canvas mutation behind the previous one. Used by
+    // `addImage` and by `undo`/`redo` (via `restoreHistory`). See the
+    // mutationQueueRef declaration for the race shapes this prevents.
+    const queueMutation = <T,>(op: () => Promise<T>): Promise<T> => {
+      const previous = mutationQueueRef.current;
+      const next = previous.then(op);
+      mutationQueueRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    };
+
     useImperativeHandle(
       ref,
       () => ({
         addImage: (dataUrl: string) => {
-          // Queue: chain onto the previous paste so concurrent calls decode
-          // (and therefore reserve their row positions) in invocation order.
+          // Queue: chain onto the previous mutation so concurrent calls decode
+          // (and therefore reserve their row positions) in invocation order,
+          // and so they can't interleave with an in-flight history restore.
           // We considered an in-place reservation approach — capturing
           // `nextImageLeft(canvas)` synchronously and bumping a pending ref —
           // but without knowing the decoded width up front we'd have to
           // reserve `MAX_PASTE_WIDTH` per paste, which leaves visible gaps
-          // between sub-800px images. Serializing decodes via a promise chain
-          // keeps tight packing and is simpler. `.catch(() => {})` keeps the
-          // chain alive when any single paste rejects.
-          const previousPaste = pasteQueueRef.current;
-          const thisPaste = previousPaste.then(async () => {
+          // between sub-800px images. Serializing decodes via the shared
+          // mutation queue keeps tight packing AND coordinates with restores.
+          return queueMutation(async () => {
             const canvas = canvasRef.current;
             if (!canvas) return;
             let image: FabricImage;
@@ -775,18 +845,22 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             fitCanvasToViewport();
             saveHistorySnapshot();
           });
-          pasteQueueRef.current = thisPaste.catch(() => {});
-          return thisPaste;
         },
         undo: () => {
           if (historyIndexRef.current <= 0) return;
           historyIndexRef.current -= 1;
-          void restoreHistory(historyRef.current[historyIndexRef.current]);
+          const state = historyRef.current[historyIndexRef.current];
+          // Queue the restore behind any in-flight paste so the two can't
+          // interleave. `restoreSeqRef` still defends against rapid undo/redo
+          // within the restore itself; this queue defends across mutation
+          // kinds.
+          void queueMutation(() => restoreHistory(state));
         },
         redo: () => {
           if (historyIndexRef.current >= historyRef.current.length - 1) return;
           historyIndexRef.current += 1;
-          void restoreHistory(historyRef.current[historyIndexRef.current]);
+          const state = historyRef.current[historyIndexRef.current];
+          void queueMutation(() => restoreHistory(state));
         },
         recolorSelected: (color: string) => {
           // Recolor whatever is currently selected. Mirrors Skitch's behavior:
@@ -818,6 +892,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           if (targets.length === 0) return;
           targets.forEach((object) => canvas.remove(object));
           canvas.discardActiveObject();
+          // Programmatic discardActiveObject doesn't always fire
+          // `selection:cleared`; notify the parent so the Delete button's
+          // disabled state reflects the now-empty selection.
+          onSelectionChangeRef.current?.(false);
           canvas.requestRenderAll();
           onHasImagesChange(imageObjects(canvas).length > 0);
           fitCanvasToViewport();
