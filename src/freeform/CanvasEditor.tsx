@@ -17,6 +17,7 @@ import {
 } from 'fabric';
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
+import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
 // globally in src/components/CanvasEditor.tsx. We rely on that here. If a user
@@ -33,6 +34,16 @@ FabricObject.ownDefaults.originY = 'top';
 const MAX_PASTE_WIDTH = 800;
 // Horizontal gap between adjacent pasted Images in the auto-row layout.
 const PASTE_GAP = 24;
+// Padding around the content bounding box in the exported PNG, in NATURAL
+// output pixels (since the export pipeline below renders at 1 scene unit = 1
+// output pixel). 20px matches the issue spec's "16-24px" range and gives a
+// breathing margin that's visible without dominating the image.
+const EXPORT_PADDING = 20;
+// Default filename for the Download action. Mirrors Skitch's
+// `EXPORT_FILE_NAME` but distinguishes the Freeform output so a user
+// downloading from both surfaces in the same session doesn't get filename
+// collisions in their Downloads folder.
+const EXPORT_FILE_NAME = 'mini-skitch-freeform.png';
 // Annotation visual constants — these mirror Skitch's exactly so annotations
 // drawn in Freeform look identical to ones drawn in Skitch. Duplication is
 // intentional: extracting a shared module risks coupling the two editors
@@ -98,6 +109,12 @@ interface CanvasEditorProps {
   // this to enable/disable the Delete button (it should be enabled iff
   // something is selected, not just whenever an Image exists).
   onSelectionChange?: (hasSelection: boolean) => void;
+  // Called when the count of canvas content (Images + Annotations) crosses
+  // the zero / non-zero threshold. Drives Export buttons (Copy PNG, Download)
+  // — they're enabled iff the canvas has anything to export. Distinct from
+  // `onHasImagesChange` because a stray annotation with no Image still counts
+  // as exportable content per issue #10 acceptance criteria.
+  onHasContentChange?: (hasContent: boolean) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
@@ -110,6 +127,13 @@ export interface FreeformCanvasEditorHandle {
   // defensive so a future Annotation selection model can't accidentally
   // vacuum them up.
   deleteSelected: () => void;
+  // Copy a PNG of the current canvas (content bbox + padding, Canvas color
+  // background, natural resolution) to the clipboard. Falls back to download
+  // if the browser doesn't support ClipboardItem image/png. Awaits any
+  // in-flight paste/restore before snapshotting (wave-3 mutation queue).
+  copyPng: () => Promise<void>;
+  // Save the same PNG to the user's Downloads folder.
+  downloadPng: () => Promise<void>;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
@@ -314,6 +338,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onToast,
       onToolChange,
       onSelectionChange,
+      onHasContentChange,
     },
     ref,
   ) {
@@ -358,6 +383,18 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // Same trick for the optional selection-change callback: the canvas-setup
     // effect runs once, so we read through a ref to pick up identity changes.
     const onSelectionChangeRef = useRef(onSelectionChange);
+    // Same pattern for the content-change callback: the imperative handle and
+    // history paths need to push hasContent updates without re-binding.
+    const onHasContentChangeRef = useRef(onHasContentChange);
+    // Mirror of canvasColor so `exportDataUrl` (called from imperative-handle
+    // methods, NOT inside an effect) can read the latest value via ref. We
+    // could read it through closure capture in the handle deps, but the ref
+    // pattern is already established here and keeps the handle stable.
+    const canvasColorRef = useRef(canvasColor);
+    // Track the last-pushed hasContent so we don't spam the parent on every
+    // mutation when the boolean hasn't changed. Reset on canvas dispose via
+    // the cleanup branch of the canvas-setup effect.
+    const hasContentRef = useRef(false);
     // Active drag-tool state (arrow/rectangle). null between drags.
     const drawingRef = useRef<DrawingState | null>(null);
     // Step-callout counter. Starts at 1 on a fresh Canvas; increments across
@@ -432,6 +469,18 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
       historyIndexRef.current = historyRef.current.length - 1;
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
+    };
+
+    // Push a hasContent update to the parent iff the boolean has actually
+    // changed. Every mutation entry point (addImage, deleteSelected, draw
+    // finalize, history restore, clear) calls this — it's idempotent and
+    // cheap. The parent uses the flag to enable/disable the Copy PNG and
+    // Download buttons.
+    const pushHasContentChange = (canvas: Canvas) => {
+      const next = freeformObjects(canvas).length > 0;
+      if (next === hasContentRef.current) return;
+      hasContentRef.current = next;
+      onHasContentChangeRef.current?.(next);
     };
 
     // Unified interactivity sync: apply selectable/evented to BOTH Images
@@ -513,6 +562,14 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     }, [onSelectionChange]);
 
     useEffect(() => {
+      onHasContentChangeRef.current = onHasContentChange;
+    }, [onHasContentChange]);
+
+    useEffect(() => {
+      canvasColorRef.current = canvasColor;
+    }, [canvasColor]);
+
+    useEffect(() => {
       if (!canvasElRef.current) return;
 
       // Seed selection from the current tool so a non-select initial tool
@@ -558,6 +615,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         }
         canvas.requestRenderAll();
         saveHistorySnapshot();
+        // The annotation we just added counts as content for the Export
+        // buttons; an Image-only canvas adding its first annotation doesn't
+        // change hasContent (still true), but the first thing on a fresh
+        // canvas does. pushHasContentChange is a no-op on no-change.
+        pushHasContentChange(canvas);
         // Refit immediately after committing the annotation. A callout placed
         // near an Image corner uses centered origin and lands at a negative
         // left/top (e.g., left = clickX - size/2); without a refit here the
@@ -973,8 +1035,132 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.requestRenderAll();
       restoringRef.current = false;
       onHasImagesChange(imageObjects(canvas).length > 0);
+      pushHasContentChange(canvas);
       fitCanvasToViewport();
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
+    };
+
+    // Compute the bounding box of all Freeform content (Images + Annotations)
+    // in scene coordinates. Returns null when the canvas is empty — callers
+    // should check before computing an export. Mirrors the bbox math in
+    // fitCanvasToViewport but does NOT filter on "must have an Image": a
+    // stray-annotation-only canvas is still exportable per issue #10.
+    const contentBoundingBox = (canvas: Canvas) => {
+      const content = freeformObjects(canvas);
+      if (content.length === 0) return null;
+      let minLeft = Infinity;
+      let minTop = Infinity;
+      let maxRight = -Infinity;
+      let maxBottom = -Infinity;
+      for (const object of content) {
+        const left = object.left ?? 0;
+        const top = object.top ?? 0;
+        const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
+        const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
+        if (left < minLeft) minLeft = left;
+        if (top < minTop) minTop = top;
+        if (right > maxRight) maxRight = right;
+        if (bottom > maxBottom) maxBottom = bottom;
+      }
+      if (!isFinite(minLeft) || !isFinite(maxRight)) return null;
+      const width = maxRight - minLeft;
+      const height = maxBottom - minTop;
+      if (width <= 0 || height <= 0) return null;
+      return { left: minLeft, top: minTop, width, height };
+    };
+
+    // Build the export PNG dataUrl. Pipeline: compute the content bbox,
+    // temporarily reset zoom + pan to identity (so 1 scene unit = 1 output
+    // pixel — i.e., natural per-Image resolution preserved, only the
+    // auto-fit display zoom is inverted), apply the chosen Canvas color as
+    // the Fabric backgroundColor, ask Fabric to crop to the bbox + padding
+    // via `toDataURL`'s {left, top, width, height} region, then restore the
+    // original viewport + background. We use Fabric's built-in region
+    // cropping rather than a hand-rolled offscreen canvas because: (a) the
+    // region option is exactly the right shape, and (b) Fabric handles
+    // backgroundColor fill and object rendering in one shot — re-doing that
+    // ourselves would duplicate the renderer.
+    //
+    // Transparent canvas color: leave Fabric's backgroundColor as '' for the
+    // export. Fabric's _renderBackgroundOrOverlay early-returns on falsy
+    // backgroundColor (verified in node_modules/fabric/dist/index.node.mjs
+    // around line 2227), so the output PNG retains its alpha channel and
+    // any empty space stays transparent.
+    const exportDataUrl = (): string | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const bbox = contentBoundingBox(canvas);
+      if (!bbox) return null;
+
+      // Drop any active selection so its bounding box handles don't render
+      // into the exported PNG. (Fabric draws controls as part of the canvas
+      // by default; skipControlsDrawing is set inside toCanvasElement, but
+      // discarding the active object is the cleaner-truth signal.)
+      canvas.discardActiveObject();
+
+      // Snapshot state we're about to mutate so the restoration path is one
+      // place rather than scattered throughout. viewportTransform is a tuple;
+      // copy via spread so a later setViewportTransform won't mutate our
+      // snapshot in place.
+      const originalVpt: [number, number, number, number, number, number] = [
+        ...canvas.viewportTransform,
+      ] as [number, number, number, number, number, number];
+      const originalBg = canvas.backgroundColor;
+      const originalWidth = canvas.getWidth();
+      const originalHeight = canvas.getHeight();
+
+      // Identity viewport: scene 1 unit = display 1 pixel. With multiplier=1
+      // below, output 1 pixel = scene 1 unit, which means each Image renders
+      // at its paste-time scaled size — the auto-fit display zoom is undone,
+      // but per-Image scaleX (from MAX_PASTE_WIDTH clamping) stays. That
+      // matches the issue spec's "natural resolution of pasted screenshots".
+      canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+
+      // Canvas color → export background. Transparent => '' (Fabric skips
+      // the fill, alpha preserved). Capturing canvasColor through a ref so a
+      // mid-session change after canvas init is reflected.
+      const exportColor = canvasColorRef.current;
+      if (exportColor === 'white') {
+        canvas.backgroundColor = '#ffffff';
+      } else if (exportColor === 'black') {
+        canvas.backgroundColor = '#000000';
+      } else {
+        canvas.backgroundColor = '';
+      }
+
+      // Bbox + padding in scene coords. EXPORT_PADDING is in NATURAL output
+      // pixels (= scene units under identity vpt + multiplier=1). Padding is
+      // additive on each side so the visible margin is EXPORT_PADDING px on
+      // top/bottom/left/right.
+      const left = bbox.left - EXPORT_PADDING;
+      const top = bbox.top - EXPORT_PADDING;
+      const width = bbox.width + EXPORT_PADDING * 2;
+      const height = bbox.height + EXPORT_PADDING * 2;
+
+      let dataUrl: string;
+      try {
+        dataUrl = canvas.toDataURL({
+          format: 'png',
+          multiplier: 1,
+          left,
+          top,
+          width,
+          height,
+        });
+      } finally {
+        // Restore. Order matters: width/height first (toCanvasElement reads
+        // them during render but already restored its own changes; we're
+        // restoring OUR mutation of viewportTransform/backgroundColor here).
+        canvas.setViewportTransform(originalVpt);
+        canvas.backgroundColor = originalBg;
+        // toCanvasElement also temporarily resets width/height but restores
+        // them. Just in case our snapshot drifted (paranoid), reassert.
+        if (canvas.getWidth() !== originalWidth || canvas.getHeight() !== originalHeight) {
+          canvas.setDimensions({ width: originalWidth, height: originalHeight });
+        }
+        canvas.requestRenderAll();
+      }
+      return dataUrl;
     };
 
     useImperativeHandle(
@@ -1042,6 +1228,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // [hasImages] above handles that case; this call covers subsequent
             // pastes where the shell is already sized.
             onHasImagesChange(true);
+            pushHasContentChange(canvas);
             fitCanvasToViewport();
             saveHistorySnapshot();
           });
@@ -1079,6 +1266,40 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           canvas.requestRenderAll();
           saveHistorySnapshot();
         },
+        copyPng: async () => {
+          // Drain the mutation queue first. If a paste or undo/redo is in
+          // flight, snapshotting now would either miss the new content or
+          // capture a half-applied state mid-restore. The queue resolves
+          // ordered, so once previous-tail settles all earlier ops have
+          // landed. Wave-3 mutation queue heads-up.
+          await mutationQueueRef.current;
+          const dataUrl = exportDataUrl();
+          if (!dataUrl) {
+            // Buttons are gated on hasContent so this branch is rare — but
+            // a race (e.g., last Image deleted between click and queue drain)
+            // can land us here. Silent-skip rather than surface a toast for
+            // what looks like a no-op to the user.
+            return;
+          }
+          const blob = await dataUrlToBlob(dataUrl);
+          const copied = await copyPngBlobToClipboard(blob);
+          if (copied) {
+            onToast('Copied PNG to clipboard', 'success');
+          } else {
+            // Mirror Skitch's fallback: if ClipboardItem image/png is
+            // unsupported (Firefox without permission, older Safari, etc.),
+            // download the file and surface the substitution as a warning
+            // so the user understands why their paste target is empty.
+            downloadDataUrl(dataUrl, EXPORT_FILE_NAME);
+            onToast('Clipboard copy not supported. Downloaded PNG instead.', 'warning');
+          }
+        },
+        downloadPng: async () => {
+          await mutationQueueRef.current;
+          const dataUrl = exportDataUrl();
+          if (!dataUrl) return;
+          downloadDataUrl(dataUrl, EXPORT_FILE_NAME);
+        },
         deleteSelected: () => {
           const canvas = canvasRef.current;
           if (!canvas) return;
@@ -1098,6 +1319,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           onSelectionChangeRef.current?.(false);
           canvas.requestRenderAll();
           onHasImagesChange(imageObjects(canvas).length > 0);
+          pushHasContentChange(canvas);
           fitCanvasToViewport();
           // `object:modified` doesn't fire on remove, so we push the snapshot
           // here. (The Skitch path does the equivalent.)

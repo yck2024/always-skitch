@@ -63,6 +63,12 @@ export default function FreeformApp() {
   // button's enabled state — the operation is a no-op when nothing is
   // selected, so the button should reflect that.
   const [hasSelection, setHasSelection] = useState(false);
+  // Whether the canvas has any exportable content (Images OR Annotations).
+  // Drives the Copy PNG / Download button enabled state per issue #10. We
+  // need a separate flag from `hasImages` because a stray annotation alone
+  // also counts as content — though in normal flow Annotations require an
+  // Image; this just keeps the gating expressive and forward-compatible.
+  const [hasContent, setHasContent] = useState(false);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -247,6 +253,29 @@ export default function FreeformApp() {
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
+        {/* Export group (issue #10). Right-aligned via the .export-actions
+            margin-left:auto rule shared with Skitch's toolbar. Both buttons
+            disabled when canvas has no Images AND no Annotations — driven by
+            `onHasContentChange` from the editor. Copy PNG falls back to
+            Download when the browser doesn't support ClipboardItem image/png,
+            matching Skitch's behavior; the editor surfaces a toast in that
+            case so the user knows why their paste target is empty. */}
+        <div className="toolbar-group export-actions" role="group" aria-label="Export commands">
+          <button
+            type="button"
+            disabled={!hasContent}
+            onClick={() => void editorRef.current?.copyPng()}
+          >
+            Copy PNG
+          </button>
+          <button
+            type="button"
+            disabled={!hasContent}
+            onClick={() => void editorRef.current?.downloadPng()}
+          >
+            Download
+          </button>
+        </div>
       </div>
       <main className="workspace">
         <FreeformCanvasEditor
@@ -260,6 +289,7 @@ export default function FreeformApp() {
           onToast={showToast}
           onToolChange={setActiveTool}
           onSelectionChange={setHasSelection}
+          onHasContentChange={setHasContent}
         />
       </main>
 
