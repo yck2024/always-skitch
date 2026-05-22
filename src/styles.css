@@ -49,7 +49,49 @@ button.primary {
 }
 
 .app {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
+}
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 1rem;
+  background: #ffffff;
+  border-bottom: 1px solid #dfe3e8;
+}
+
+.top-nav .brand {
+  margin-right: auto;
+}
+
+.top-nav-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.top-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  color: #525963;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.top-nav-tab:hover {
+  background: #f1f3f5;
+  color: #202124;
+}
+
+.top-nav-tab.active {
+  background: #202124;
+  color: #ffffff;
 }
 
 .toolbar {
@@ -101,13 +143,16 @@ button.primary {
 }
 
 .workspace {
-  min-height: calc(100vh - 72px);
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
   padding: 2rem;
 }
 
 .canvas-shell {
+  flex: 1 1 auto;
   display: grid;
-  min-height: calc(100vh - 136px);
+  min-height: 0;
   place-items: center;
 }
 
@@ -157,8 +202,8 @@ button.primary {
 
 .canvas-wrap.visible {
   display: block;
-  max-width: calc(100vw - 4rem);
-  max-height: calc(100vh - 150px);
+  max-width: 100%;
+  max-height: 100%;
   overflow: auto;
   border-radius: 10px;
   background: #ffffff;
