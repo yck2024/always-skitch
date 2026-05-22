@@ -63,6 +63,33 @@ const PIXEL_SIZE = 12;
 // treat the drag as a stray click and silently discard. Mirrors Skitch.
 const BLUR_MIN_SIZE = 8;
 
+// macOS-style drop shadow applied to every Image (NOT to annotations). Soft,
+// diffuse, predominantly downward. Tuned per issue #11 spec. Shadow blur and
+// offsets are in scene coordinates — Fabric scales the shadow naturally with
+// the object's transform, and the canvas auto-fit zoom shrinks it visually
+// the same way CSS shadows shrink under `transform: scale(...)`.
+const IMAGE_SHADOW = { color: 'rgba(0, 0, 0, 0.25)', blur: 30, offsetX: 0, offsetY: 15 };
+
+// Per-side scene-coord extent the IMAGE_SHADOW adds beyond an Image's geometry.
+// Used by bbox math (fit-to-viewport and export) to grow each Image's
+// contribution to the content union so the shadow isn't clipped at the canvas
+// edge or at the exported PNG boundary. Derived once from IMAGE_SHADOW so any
+// future tuning of the shadow params automatically propagates here.
+//
+// Direction math: with offset (dx, dy), the visible blur reaches `blur` units
+// out from each edge in the un-offset case; the offset then pushes the blur
+// toward (dx, dy) on the offset side and pulls it in on the opposite side. So
+// the right edge extends by `blur + dx`, the left by `blur - dx`, the bottom
+// by `blur + dy`, and the top by `blur - dy`. Each side is clamped to >= 0
+// (an offset larger than the blur would otherwise produce a negative extent
+// on the trailing side, which makes no sense for bbox expansion).
+const SHADOW_EXTENT = {
+  top: Math.max(0, IMAGE_SHADOW.blur - IMAGE_SHADOW.offsetY),
+  bottom: Math.max(0, IMAGE_SHADOW.blur + IMAGE_SHADOW.offsetY),
+  left: Math.max(0, IMAGE_SHADOW.blur - IMAGE_SHADOW.offsetX),
+  right: Math.max(0, IMAGE_SHADOW.blur + IMAGE_SHADOW.offsetX),
+};
+
 // Drawing state for mouse-drag tools (arrow, rectangle, blur). Click-place
 // tools (text, callout) finalize immediately so they don't appear here. The
 // blur drag carries a reference to the source Image — anchored at mouse-down,
@@ -158,13 +185,44 @@ function freeformObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind !== undefined);
 }
 
+// Display/scene-coord bounding rect of a Freeform object, expanded to include
+// shadow extent for Images only. Annotations sit flush with their own geometry
+// (no shadow), so they contribute their bare rect. Used by both
+// fitCanvasToViewport and contentBoundingBox so the shadow isn't clipped at
+// the viewport edge OR at the export PNG boundary. Returns {left, top, right,
+// bottom}. Centralizing here means a future tweak to SHADOW_EXTENT can't drift
+// between the two call sites.
+function objectBoundsWithShadow(object: FabricObject): {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+} {
+  const left = object.left ?? 0;
+  const top = object.top ?? 0;
+  const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
+  const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
+  if ((object as TaggedObject).data?.kind === 'image') {
+    return {
+      left: left - SHADOW_EXTENT.left,
+      top: top - SHADOW_EXTENT.top,
+      right: right + SHADOW_EXTENT.right,
+      bottom: bottom + SHADOW_EXTENT.bottom,
+    };
+  }
+  return { left, top, right, bottom };
+}
+
 // Apply per-Image interaction defaults: hide the middle (side) scaling handles
-// and the rotation handle so only corner resize is offered. The aspect-ratio
-// lock during corner resize is handled at the Canvas level (uniformScaling:
-// true, uniScaleKey: 'shiftKey') — the Image itself doesn't need lockScaling
-// flags. Called in two places: when a new Image is added, and after history
-// restore (because `_controlsVisibility` is an instance field that isn't
-// captured by Fabric's serialization).
+// and the rotation handle so only corner resize is offered, and attach the
+// macOS-style drop shadow (#11). The aspect-ratio lock during corner resize is
+// handled at the Canvas level (uniformScaling: true, uniScaleKey: 'shiftKey')
+// — the Image itself doesn't need lockScaling flags. Called in two places:
+// when a new Image is added, and after history restore (because
+// `_controlsVisibility` is an instance field that isn't captured by Fabric's
+// serialization, and `shadow` isn't in our serializeAll prop list either —
+// re-applying here means restored Images render with the shadow on the same
+// frame they appear, no flicker).
 function applyImageInteractionDefaults(image: FabricObject) {
   image.setControlsVisibility({
     mt: false,
@@ -173,6 +231,7 @@ function applyImageInteractionDefaults(image: FabricObject) {
     mr: false,
     mtr: false,
   });
+  image.shadow = new Shadow(IMAGE_SHADOW);
 }
 
 // Skitch filters out the background singleton when serializing. Freeform has no
@@ -421,19 +480,23 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // Bounding box: union of all content display rectangles. Images are
       // placed in a horizontal row starting at top=0; Annotations can sit
       // anywhere relative to their Image. Compute generically.
+      //
+      // Per-Image shadow extent (#11) is folded in via objectBoundsWithShadow
+      // so the shadow doesn't get clipped at the viewport edge. Annotations
+      // contribute their bare rect — they have no shadow. We deliberately do
+      // NOT expand the final union by SHADOW_EXTENT on all sides: an
+      // Annotation that sits flush with its right edge against the page
+      // shouldn't add unnecessary margin.
       let minLeft = Infinity;
       let minTop = Infinity;
       let maxRight = -Infinity;
       let maxBottom = -Infinity;
       for (const object of content) {
-        const left = object.left ?? 0;
-        const top = object.top ?? 0;
-        const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
-        const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
-        if (left < minLeft) minLeft = left;
-        if (top < minTop) minTop = top;
-        if (right > maxRight) maxRight = right;
-        if (bottom > maxBottom) maxBottom = bottom;
+        const bounds = objectBoundsWithShadow(object);
+        if (bounds.left < minLeft) minLeft = bounds.left;
+        if (bounds.top < minTop) minTop = bounds.top;
+        if (bounds.right > maxRight) maxRight = bounds.right;
+        if (bounds.bottom > maxBottom) maxBottom = bounds.bottom;
       }
       if (!isFinite(minLeft) || !isFinite(maxRight)) return;
       // Track min as well as max: Annotations can have negative left/top (e.g.,
@@ -1045,6 +1108,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // should check before computing an export. Mirrors the bbox math in
     // fitCanvasToViewport but does NOT filter on "must have an Image": a
     // stray-annotation-only canvas is still exportable per issue #10.
+    //
+    // Per-Image shadow extent (#11) is folded in via objectBoundsWithShadow so
+    // the export PNG includes the full shadow halo. EXPORT_PADDING is then
+    // additive on top of this expanded bbox.
     const contentBoundingBox = (canvas: Canvas) => {
       const content = freeformObjects(canvas);
       if (content.length === 0) return null;
@@ -1053,14 +1120,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       let maxRight = -Infinity;
       let maxBottom = -Infinity;
       for (const object of content) {
-        const left = object.left ?? 0;
-        const top = object.top ?? 0;
-        const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
-        const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
-        if (left < minLeft) minLeft = left;
-        if (top < minTop) minTop = top;
-        if (right > maxRight) maxRight = right;
-        if (bottom > maxBottom) maxBottom = bottom;
+        const bounds = objectBoundsWithShadow(object);
+        if (bounds.left < minLeft) minLeft = bounds.left;
+        if (bounds.top < minTop) minTop = bounds.top;
+        if (bounds.right > maxRight) maxRight = bounds.right;
+        if (bounds.bottom > maxBottom) maxBottom = bounds.bottom;
       }
       if (!isFinite(minLeft) || !isFinite(maxRight)) return null;
       const width = maxRight - minLeft;
