@@ -509,3 +509,53 @@ button.primary {
   background-color: #000000;
 }
 
+/* ADR-0006 right-click context menu. The backdrop is a full-viewport
+   pointer-event catcher: invisible but click-receiving, so any click anywhere
+   on the page dismisses the menu. Sits below the menu in z-order so the
+   menu's own buttons receive their clicks first (the menu also stops
+   pointerdown propagation to be safe). */
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: transparent;
+}
+
+/* The menu itself: a small floating panel anchored at the click coordinates.
+   Position-fixed because we receive viewport-relative coords from the editor
+   (event.clientX/Y) and need no further translation. Keep the visual weight
+   light — this matches Apple Freeform / Figma minimalism rather than a heavy
+   OS-native context menu. */
+.context-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 168px;
+  padding: 6px;
+  background: #ffffff;
+  border: 1px solid #d8dde6;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.context-menu button {
+  appearance: none;
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #1f2937;
+  font: inherit;
+}
+
+.context-menu button:hover,
+.context-menu button:focus-visible {
+  background: #eef2f7;
+  outline: none;
+}
+
