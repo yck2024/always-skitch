@@ -35,6 +35,10 @@ _Avoid_: z-order, stacking, depth, level
 The two commands the user invokes (keyboard `]` / `[`, or right-click menu) to move selected **Images** to the top or bottom of the **Image** layer stack. Applies only to **Images** in the selection; Annotations and empty selections are no-ops.
 _Avoid_: raise, lower, promote, demote
 
+**Clear Canvas**:
+The user command that wipes every **Image** and **Annotation** from the **Canvas**, leaving it empty. **Active color**, **Canvas color**, and the active tool are preserved — they are settings, not content. The action is undoable: Cmd+Z restores the prior state. Distinct from Skitch's `Clear`, which only removes annotations and keeps the Background; Freeform has no Background, so clearing means clearing everything.
+_Avoid_: reset, new canvas, empty, wipe, start over
+
 ## Relationships
 
 - A **Canvas** hosts zero or more **Images** and zero or more **Annotations**.
