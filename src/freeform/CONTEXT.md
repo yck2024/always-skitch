@@ -20,8 +20,12 @@ _Avoid_: shape, marker
 The pen color new **Annotations** are drawn in. Unlike Skitch, the **Active color** persists across pastes — pasting an **Image** never resets it.
 
 **Canvas color**:
-The color of the **Canvas** itself — shows in empty space between **Images** and forms the background of the exported PNG. User picks from White (default), Black, or Transparent. Independent of the **Active color**; changing one does not affect the other.
+The color of the **Canvas** itself — shows in empty space between **Images** and forms the background of the exported PNG. User picks one of four modes from the toolbar: **White** (default), **Black**, **Transparent**, or **Match**. Independent of the **Active color**; changing one does not affect the other.
 _Avoid_: backdrop, paper, fill
+
+**Match** (Canvas color mode):
+A derivation: **Canvas color** = saturation-weighted, lightness-clamped dominant color of the most-recently-pasted **Image**. Auto-engages once when the user pastes into a fresh canvas (the only setting in Freeform that can change implicitly on paste). After the user explicitly picks **White**, **Black**, or **Transparent**, **Match** disengages until the user clicks the **Match** swatch again. The derived color is "designed" (softened), not literal — pure most-frequent extraction would return near-white on typical screenshots and clash with palette annotations otherwise.
+_Avoid_: Auto, Adaptive, Derived, From image
 
 **Layer order**:
 The front-to-back stacking of objects on the **Canvas**. **Annotations** always render above **Images** — an unbreakable rule. Among **Images**, **Layer order** is user-controlled via **Bring to Front** and **Send to Back**. Among **Annotations**, draw order determines the stack (newer in front).
@@ -39,6 +43,7 @@ _Avoid_: raise, lower, promote, demote
 - **Annotations** always render on top of all **Images**. The user has no operation that puts an **Image** above an **Annotation**.
 - Among **Annotations**, **Layer order** follows draw order — newer in front of older. There are no per-Annotation reorder controls in MVP.
 - Among **Images**, **Layer order** is user-controlled via **Bring to Front** / **Send to Back**. A freshly pasted **Image** lands at the top of the Image stack by default (still below all Annotations).
+- **Canvas color** is preserved across pastes, with one carve-out: when **Match** mode is active, each paste re-derives the color. Explicit **White** / **Black** / **Transparent** picks are never disturbed by paste.
 
 ## Example dialogue
 
@@ -50,3 +55,5 @@ _Avoid_: raise, lower, promote, demote
 > **PM:** "Yes. New pastes land on top of the existing Image stack by default. If the user wants a different order, they select an Image and press `]` (Bring to Front) or `[` (Send to Back)."
 > **Dev:** "If I select both an Image and an Annotation and press `]`?"
 > **PM:** "Only the Image moves. Annotations are ignored by the layer commands — they're already above all Images by rule."
+> **Dev:** "Does pasting an Image ever change Canvas color?"
+> **PM:** "Only when **Canvas color** is in **Match** mode. Then each paste re-derives a softened dominant color from the pasted Image. If the user has clicked White/Black/Transparent, paste leaves Canvas color alone. **Match** also auto-engages once, the first time a user pastes into a fresh canvas — that's the only implicit setting change in Freeform."
