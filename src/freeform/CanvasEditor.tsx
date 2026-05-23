@@ -1651,24 +1651,26 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // (same shape every other mutation pushes), so Cmd+Z restores prior
         // state.
         clearCanvas: () => {
-          const canvas = canvasRef.current;
-          if (!canvas) return;
-          const targets = canvas
-            .getObjects()
-            .filter((object) => (object as TaggedObject).data?.kind !== undefined);
-          if (targets.length === 0) return;
-          targets.forEach((object) => canvas.remove(object));
-          canvas.discardActiveObject();
-          // Programmatic discardActiveObject doesn't always fire
-          // `selection:cleared`; notify the parent so the Delete button's
-          // disabled state reflects the now-empty selection. Mirrors
-          // deleteSelected.
-          onSelectionChangeRef.current?.(false);
-          canvas.requestRenderAll();
-          onHasImagesChange(false);
-          pushHasContentChange(canvas);
-          fitCanvasToViewport();
-          saveHistorySnapshot();
+          void queueMutation(async () => {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const targets = canvas
+              .getObjects()
+              .filter((object) => (object as TaggedObject).data?.kind !== undefined);
+            if (targets.length === 0) return;
+            targets.forEach((object) => canvas.remove(object));
+            canvas.discardActiveObject();
+            // Programmatic discardActiveObject doesn't always fire
+            // `selection:cleared`; notify the parent so the Delete button's
+            // disabled state reflects the now-empty selection. Mirrors
+            // deleteSelected.
+            onSelectionChangeRef.current?.(false);
+            canvas.requestRenderAll();
+            onHasImagesChange(false);
+            pushHasContentChange(canvas);
+            fitCanvasToViewport();
+            saveHistorySnapshot();
+          });
         },
       }),
       // Stable handle: the closures above read from refs and the latest props
