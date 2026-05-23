@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorPicker } from '../components/ColorPicker';
+import { ShortcutsModal, type ShortcutRow } from '../components/ShortcutsModal';
 import { TopNav } from '../components/TopNav';
 import { DEFAULT_COLOR, PALETTE } from '../palette';
 import type { ToastMessage, Tool } from '../types';
@@ -69,6 +70,9 @@ export default function FreeformApp() {
   // also counts as content — though in normal flow Annotations require an
   // Image; this just keeps the gating expressive and forward-compatible.
   const [hasContent, setHasContent] = useState(false);
+  // Shortcuts modal visibility. Opened by the toolbar button or the `?` key.
+  // Closed by clicking the backdrop, the close button, or pressing Esc.
+  const [showShortcuts, setShowShortcuts] = useState(false);
   // ADR-0006 right-click context menu. `null` = closed; an `{x, y}` pair
   // means open at that viewport position. Position is in fixed-position
   // pixel coords — see the overlay below. The CanvasEditor handles the
@@ -147,6 +151,24 @@ export default function FreeformApp() {
       const target = event.target as HTMLElement | null;
       const isEditingText = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.isContentEditable;
       const key = event.key.toLowerCase();
+      // Shortcuts modal claims Esc first when open — matches Skitch's layered
+      // overlay handling. Any other key is ignored while the modal is open so
+      // shortcuts in the list don't fire from the listing itself.
+      if (showShortcuts) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setShowShortcuts(false);
+        }
+        return;
+      }
+      // `?` opens the shortcuts modal (Shift+/ on US layouts). Skitch uses the
+      // same binding; keeping it identical so muscle memory transfers between
+      // the two routes.
+      if (event.key === '?' && !isEditingText) {
+        event.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
       // Undo / Redo. We support both Cmd+Shift+Z and Cmd+Y for redo, matching
       // common cross-platform conventions.
       if (meta && key === 'z' && !isEditingText) {
@@ -220,7 +242,7 @@ export default function FreeformApp() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [appendImageFile, contextMenu, closeContextMenu]);
+  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts]);
 
   return (
     <div className="app">
@@ -293,6 +315,17 @@ export default function FreeformApp() {
             (driven by `onSelectionChange` from the editor). */}
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
+        </button>
+        {/* Shortcuts mirrors Skitch's button. Always enabled — it's a reference
+            overlay, useful even before any content is on the canvas. The `?`
+            key opens the same modal. */}
+        <button
+          type="button"
+          onClick={() => setShowShortcuts(true)}
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts (?)"
+        >
+          Shortcuts
         </button>
         {/* Export group (issue #10). Right-aligned via the .export-actions
             margin-left:auto rule shared with Skitch's toolbar. Both buttons
@@ -368,9 +401,51 @@ export default function FreeformApp() {
           </div>
         ))}
       </div>
+
+      {showShortcuts ? (
+        <ShortcutsModal
+          onClose={() => setShowShortcuts(false)}
+          sections={FREEFORM_SHORTCUT_SECTIONS}
+          footnote="Single-letter shortcuts are ignored while editing text. Annotations live in Canvas coordinates — dragging an Image leaves them behind unless you group-select first."
+        />
+      ) : null}
     </div>
   );
 }
+
+// Freeform-specific shortcut listing. Tools mirror Skitch (V/A/R/T/S/B) so
+// muscle memory transfers, but Actions diverge: Freeform has `[` / `]` for
+// Image layer order (ADR-0006) and no Clear-annotations (the multi-Image
+// model doesn't have a single-screenshot "reset" gesture).
+const FREEFORM_TOOL_SHORTCUTS: ShortcutRow[] = [
+  ['V', 'Select'],
+  ['A', 'Arrow'],
+  ['R', 'Rectangle'],
+  ['T', 'Text'],
+  ['S', 'Step'],
+  ['B', 'Blur'],
+];
+
+const FREEFORM_ACTION_SHORTCUTS: ShortcutRow[] = [
+  [']', 'Bring selected Image(s) to front'],
+  ['[', 'Send selected Image(s) to back'],
+  ['Esc', 'Switch to Select / close menus'],
+  ['?', 'Open this shortcut list'],
+];
+
+const FREEFORM_COMBO_SHORTCUTS: ShortcutRow[] = [
+  ['Cmd / Ctrl + V', 'Paste an image (adds to Canvas)'],
+  ['Cmd / Ctrl + Z', 'Undo'],
+  ['Cmd / Ctrl + Shift + Z', 'Redo'],
+  ['Cmd / Ctrl + Y', 'Redo'],
+  ['Backspace / Delete', 'Delete selected'],
+];
+
+const FREEFORM_SHORTCUT_SECTIONS = [
+  { title: 'Tools', rows: FREEFORM_TOOL_SHORTCUTS },
+  { title: 'Actions', rows: FREEFORM_ACTION_SHORTCUTS },
+  { title: 'With modifier', rows: FREEFORM_COMBO_SHORTCUTS },
+];
 
 interface FreeformContextMenuProps {
   x: number;

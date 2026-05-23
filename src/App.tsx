@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CanvasEditor, type CanvasEditorHandle } from './components/CanvasEditor';
+import { ShortcutsModal, type ShortcutRow } from './components/ShortcutsModal';
 import { Toolbar } from './components/Toolbar';
 import { TopNav } from './components/TopNav';
 import { DEFAULT_COLOR } from './palette';
@@ -207,12 +208,18 @@ export default function App() {
         ))}
       </div>
 
-      {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      {showShortcuts ? (
+        <ShortcutsModal
+          onClose={() => setShowShortcuts(false)}
+          sections={SKITCH_SHORTCUT_SECTIONS}
+          footnote="Single-letter shortcuts are ignored while editing text. Clicking on an existing annotation while a drawing tool is active escapes back to Select and picks it up."
+        />
+      ) : null}
     </div>
   );
 }
 
-const TOOL_SHORTCUTS: Array<[string, string]> = [
+const TOOL_SHORTCUTS: ShortcutRow[] = [
   ['V', 'Select'],
   ['A', 'Arrow'],
   ['R', 'Rectangle'],
@@ -221,7 +228,7 @@ const TOOL_SHORTCUTS: Array<[string, string]> = [
   ['B', 'Blur'],
 ];
 
-const ACTION_SHORTCUTS: Array<[string, string]> = [
+const ACTION_SHORTCUTS: ShortcutRow[] = [
   ['U', 'Undo'],
   ['Shift + U', 'Redo'],
   ['D', 'Delete selected'],
@@ -230,7 +237,7 @@ const ACTION_SHORTCUTS: Array<[string, string]> = [
   ['?', 'Open this shortcut list'],
 ];
 
-const COMBO_SHORTCUTS: Array<[string, string]> = [
+const COMBO_SHORTCUTS: ShortcutRow[] = [
   ['Cmd / Ctrl + V', 'Paste an image'],
   ['Cmd / Ctrl + C', 'Copy annotated PNG'],
   ['Cmd / Ctrl + Z', 'Undo'],
@@ -238,57 +245,8 @@ const COMBO_SHORTCUTS: Array<[string, string]> = [
   ['Backspace / Delete', 'Delete selected'],
 ];
 
-function ShortcutsModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="shortcuts-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="modal-header">
-          <h2 id="shortcuts-title">Keyboard shortcuts</h2>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close shortcuts">
-            ×
-          </button>
-        </header>
-        <div className="modal-body">
-          <ShortcutSection title="Tools" rows={TOOL_SHORTCUTS} />
-          <ShortcutSection title="Actions" rows={ACTION_SHORTCUTS} />
-          <ShortcutSection title="With modifier" rows={COMBO_SHORTCUTS} />
-          <p className="modal-footnote">
-            Single-letter shortcuts are ignored while editing text. Clicking on an existing annotation
-            while a drawing tool is active escapes back to Select and picks it up.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ShortcutSection({ title, rows }: { title: string; rows: Array<[string, string]> }) {
-  return (
-    <section>
-      <h3 className="modal-section-title">{title}</h3>
-      <table>
-        <tbody>
-          {rows.map(([key, action]) => (
-            <tr key={`${title}-${key}`}>
-              <td className="key">
-                {key.split(' + ').map((part, index, all) => (
-                  <span key={part}>
-                    <kbd>{part}</kbd>
-                    {index < all.length - 1 ? ' + ' : null}
-                  </span>
-                ))}
-              </td>
-              <td>{action}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
-  );
-}
+const SKITCH_SHORTCUT_SECTIONS = [
+  { title: 'Tools', rows: TOOL_SHORTCUTS },
+  { title: 'Actions', rows: ACTION_SHORTCUTS },
+  { title: 'With modifier', rows: COMBO_SHORTCUTS },
+];
