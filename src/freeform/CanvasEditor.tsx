@@ -200,6 +200,12 @@ export interface FreeformCanvasEditorHandle {
   // is its own undo step.
   bringSelectedImagesToFront: () => void;
   sendSelectedImagesToBack: () => void;
+  // ADR-0007: wipe every Freeform-tagged object (Images and Annotations) in a
+  // single undoable step. Diverges from Skitch's `clearAnnotations` (which
+  // keeps the Background) because Freeform has no Background — clearing means
+  // clearing everything. Settings (Active color, Canvas color, active tool)
+  // are preserved.
+  clearCanvas: () => void;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
@@ -1638,6 +1644,31 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         },
         sendSelectedImagesToBack: () => {
           applyLayerReorder('back');
+        },
+        // ADR-0007: wipes Images too — Skitch's clearAnnotations only kills
+        // annotations, but Freeform has no Background, so clearing means
+        // clearing everything. Single history snapshot via saveHistorySnapshot
+        // (same shape every other mutation pushes), so Cmd+Z restores prior
+        // state.
+        clearCanvas: () => {
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const targets = canvas
+            .getObjects()
+            .filter((object) => (object as TaggedObject).data?.kind !== undefined);
+          if (targets.length === 0) return;
+          targets.forEach((object) => canvas.remove(object));
+          canvas.discardActiveObject();
+          // Programmatic discardActiveObject doesn't always fire
+          // `selection:cleared`; notify the parent so the Delete button's
+          // disabled state reflects the now-empty selection. Mirrors
+          // deleteSelected.
+          onSelectionChangeRef.current?.(false);
+          canvas.requestRenderAll();
+          onHasImagesChange(false);
+          pushHasContentChange(canvas);
+          fitCanvasToViewport();
+          saveHistorySnapshot();
         },
       }),
       // Stable handle: the closures above read from refs and the latest props
