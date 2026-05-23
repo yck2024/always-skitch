@@ -60,6 +60,37 @@ export default function FreeformApp() {
   // no localStorage, no router. Defaults to 'white' on every fresh session.
   // Not pushed to history; switching is a setting, not an edit.
   const [canvasColor, setCanvasColor] = useState<FreeformCanvasColor>('white');
+  // ADR-0008 (Canvas color Match mode) — cache of the last successfully
+  // extracted dominant color from a pasted Image, plus a flag for whether
+  // Match mode is currently driving the Canvas color. Both live in App.tsx
+  // because the state machine (auto-engage on first paste, recompute while
+  // active, disengage on explicit W/B/T pick, silent fallback on extraction
+  // failure) belongs at the same level as the Canvas color picker — the
+  // editor stays mode-agnostic and just paints whatever effective color we
+  // pass through. NOT pushed to history; both are session settings.
+  //
+  // Slice 1 (issue #19) intentionally has no 4th swatch and no re-engage
+  // path — once the user clicks W/B/T, matchActive flips false and stays
+  // there until the next page load. Slice 2 (#20) adds the swatch.
+  const [derivedColor, setDerivedColor] = useState<string | null>(null);
+  const [matchActive, setMatchActive] = useState(false);
+  // ADR-0008 sticky-pick guard. Auto-engage must fire "exactly once" per session,
+  // gated on the user never having expressed a Canvas-color preference. Distinct
+  // from `matchActive` because `matchActive` flips off the moment the user clicks
+  // W/B/T — but the "I have made a choice" signal needs to outlive that, so a
+  // subsequent canvas-empty transition (delete-all-Images, undo back to empty)
+  // doesn't let the next paste re-fire the auto-engage path and silently override
+  // the user's explicit pick. Set true on any W/B/T click and never cleared for
+  // the session. (Slice 2 / #20 will also set this when the user clicks the new
+  // Match swatch — same intent: any explicit Canvas-color action is a "user has
+  // chosen".)
+  const [userPickedCanvasColor, setUserPickedCanvasColor] = useState(false);
+  // Effective color passed down to the editor. When Match is active AND we
+  // have a successfully derived color, that wins; otherwise the explicit
+  // user pick stays in charge. Transparent / Black / White all flow through
+  // unmodified.
+  const effectiveCanvasColor: FreeformCanvasColor | string =
+    matchActive && derivedColor ? derivedColor : canvasColor;
   // Whether the canvas has at least one selected object. Drives the Delete
   // button's enabled state — the operation is a no-op when nothing is
   // selected, so the button should reflect that.
@@ -113,6 +144,73 @@ export default function FreeformApp() {
   const handleColorChange = useCallback((color: string) => {
     setActiveColor(color);
     editorRef.current?.recolorSelected(color);
+  }, []);
+
+  // ADR-0008 — paste-driven Canvas color update for Match mode.
+  //
+  // Three behaviors folded into one callback:
+  //
+  // 1. Cache update on success: if extraction returned a hex string, update
+  //    `derivedColor`. We unconditionally cache the latest successful pull
+  //    even when Match is inactive — that way, if the user later clicks the
+  //    Match swatch (slice 2 / #20), there's something to engage with.
+  //
+  // 2. Auto-engage on first paste: if the canvas was empty before this paste
+  //    AND extraction succeeded AND the user hasn't expressed an explicit
+  //    Canvas-color preference yet, flip `matchActive` to true. The
+  //    "was the canvas empty before this paste" signal comes from the editor
+  //    as `wasEmpty` — it's computed synchronously inside the editor's
+  //    queued addImage mutation BEFORE canvas.add, so it's race-free across
+  //    rapid double-pastes. Reading React `hasImages` from closure here is
+  //    NOT safe: two pastes fired close together both capture `hasImages ===
+  //    false` and would both auto-engage. (`userPickedCanvasColor` is the
+  //    other half of the gate — see below.)
+  //
+  // 3. Silent fallback on first-paste extraction failure: when the canvas is
+  //    empty and extraction returns null (all-white screenshot, all-grayscale
+  //    image, CORS-tainted etc.), we leave matchActive=false. Canvas color
+  //    stays White. No toast, no engagement. On subsequent pastes while
+  //    Match-active, failure simply keeps the previously cached derivedColor
+  //    — handled by NOT clearing it on null.
+  const handleImagePastedDominantColor = useCallback(
+    (color: string | null, wasEmpty: boolean) => {
+      if (color !== null) {
+        setDerivedColor(color);
+        // Auto-engage gate has two halves:
+        //   - `wasEmpty`: editor-synchronous "canvas was empty when this
+        //     paste's queued mutation actually ran". Rules out paste-2 in
+        //     a rapid double-paste — paste-1 has already added its image
+        //     to canvas by the time paste-2's mutation evaluates this.
+        //   - `!userPickedCanvasColor`: the user has not clicked any W/B/T
+        //     swatch this session. Once they have, auto-engage is forever
+        //     off — even if the canvas later goes empty again (delete-all
+        //     or undo to empty) and they paste again. ADR-0008 says Match
+        //     auto-engages "exactly once".
+        if (wasEmpty && !userPickedCanvasColor) {
+          setMatchActive(true);
+        }
+      }
+      // null path: leave both matchActive and derivedColor alone. If Match
+      // was active, the existing derivedColor stays in effect (per ADR-0008's
+      // "previous color on subsequent failures" rule). If Match was inactive,
+      // nothing happens.
+    },
+    [userPickedCanvasColor],
+  );
+
+  // Wrap setCanvasColor so an explicit W/B/T pick also disengages Match AND
+  // arms the sticky "user has chosen" guard so a later canvas-empty transition
+  // (delete-all, undo to empty) doesn't let the next paste re-fire auto-engage
+  // and override the user's pick. ADR-0008 makes the carve-out explicit: paste-
+  // driven updates apply only while Match is active, and an explicit user pick
+  // is the only way to turn Match off in slice 1 (slice 2 / #20 adds the re-
+  // engage path via the 4th swatch). Keeping this in a single callback rather
+  // than three setX calls on the swatch onClick avoids accidentally forgetting
+  // one of them at a future call site.
+  const handleCanvasColorPick = useCallback((value: FreeformCanvasColor) => {
+    setCanvasColor(value);
+    setMatchActive(false);
+    setUserPickedCanvasColor(true);
   }, []);
 
   // Append an image to the Canvas. Unlike Skitch's loadImageFile, this never
@@ -290,17 +388,25 @@ export default function FreeformApp() {
             history; selection is a setting, not an edit. */}
         <div className="canvas-color-group" role="group" aria-label="Canvas color">
           <span className="canvas-color-label" aria-hidden="true">Canvas</span>
-          {CANVAS_COLOR_OPTIONS.map(({ value, label }) => (
-            <button
-              key={value}
-              type="button"
-              className={`canvas-color-swatch canvas-color-${value}${canvasColor === value ? ' active' : ''}`}
-              onClick={() => setCanvasColor(value)}
-              aria-label={`Canvas color: ${label}`}
-              aria-pressed={canvasColor === value}
-              title={`Canvas color: ${label}`}
-            />
-          ))}
+          {CANVAS_COLOR_OPTIONS.map(({ value, label }) => {
+            // ADR-0008: a swatch is "active" only when its value is the
+            // explicit pick AND Match is not overriding. When Match is on,
+            // none of the three swatches show as active — that's the
+            // acceptable interim state called out in #19; #20 adds the 4th
+            // swatch which will be the active one in that case.
+            const isActive = !matchActive && canvasColor === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                className={`canvas-color-swatch canvas-color-${value}${isActive ? ' active' : ''}`}
+                onClick={() => handleCanvasColorPick(value)}
+                aria-label={`Canvas color: ${label}`}
+                aria-pressed={isActive}
+                title={`Canvas color: ${label}`}
+              />
+            );
+          })}
         </div>
         <button type="button" onClick={() => editorRef.current?.undo()} disabled={!canUndo}>
           Undo
@@ -357,7 +463,7 @@ export default function FreeformApp() {
           hasImages={hasImages}
           activeTool={activeTool}
           activeColor={activeColor}
-          canvasColor={canvasColor}
+          canvasColor={effectiveCanvasColor}
           onHasImagesChange={setHasImages}
           onHistoryChange={handleHistoryChange}
           onToast={showToast}
@@ -365,6 +471,7 @@ export default function FreeformApp() {
           onSelectionChange={setHasSelection}
           onHasContentChange={setHasContent}
           onContextMenu={setContextMenu}
+          onImagePastedDominantColor={handleImagePastedDominantColor}
         />
       </main>
 
