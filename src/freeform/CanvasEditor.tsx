@@ -187,11 +187,18 @@ interface CanvasEditorProps {
   // ADR-0008 (Canvas color Match mode): fired once per successful Image
   // paste, AFTER the FabricImage has decoded. Carries the saturation-weighted,
   // lightness-clamped dominant color of the pasted Image, or `null` when the
-  // image yields no usable color (all-white, all-gray, etc.). The editor has
-  // no opinion on what the parent does with this — auto-engage logic, caching,
-  // and the active/inactive state of Match mode all live in App.tsx so this
-  // component stays mode-agnostic.
-  onImagePastedDominantColor?: (color: string | null) => void;
+  // image yields no usable color (all-white, all-gray, etc.), plus `wasEmpty`
+  // — true iff the canvas held no Images at the moment this paste's queued
+  // mutation began (i.e., before canvas.add for this paste). The editor owns
+  // this signal so the auto-engage gate in App.tsx is race-free across rapid
+  // double-pastes: queued mutations are serialized, so paste-1 has already
+  // added its Image by the time paste-2's mutation evaluates wasEmpty.
+  // Reading React state in App.tsx instead would let two near-simultaneous
+  // pastes both observe `hasImages === false` and both auto-engage. The
+  // editor has no opinion on what the parent does with these — auto-engage
+  // logic, caching, and the active/inactive state of Match mode all live in
+  // App.tsx so this component stays mode-agnostic.
+  onImagePastedDominantColor?: (color: string | null, wasEmpty: boolean) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
@@ -1509,6 +1516,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           return queueMutation(async () => {
             const canvas = canvasRef.current;
             if (!canvas) return;
+            // ADR-0008 race fix: capture "was the canvas empty before this
+            // paste" synchronously, at the moment this paste's queued mutation
+            // starts running and BEFORE canvas.add. Mutations are serialized
+            // by queueMutation, so a previous paste in the same batch has
+            // already landed its Image on the canvas by the time we read this.
+            // This is the source of truth the auto-engage gate in App.tsx
+            // depends on — reading React `hasImages` instead would let two
+            // rapid pastes both observe `false` and both auto-engage.
+            const wasEmpty = imageObjects(canvas).length === 0;
             let image: FabricImage;
             try {
               image = await FabricImage.fromURL(dataUrl);
@@ -1572,11 +1588,13 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // signaled with `null` so the parent can decide what "silent
             // fallback" means in its current state (per ADR-0008: White on
             // first paste, previous derived color on subsequent pastes).
+            // `wasEmpty` (captured pre-add at the top of this mutation) is the
+            // race-free source of truth for App.tsx's auto-engage gate.
             if (onImagePastedDominantColor) {
               const element = image.getElement();
               const color =
                 element instanceof HTMLImageElement ? extractDominantColor(element) : null;
-              onImagePastedDominantColor(color);
+              onImagePastedDominantColor(color, wasEmpty);
             }
           });
         },

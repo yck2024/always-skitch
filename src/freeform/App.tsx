@@ -74,6 +74,17 @@ export default function FreeformApp() {
   // there until the next page load. Slice 2 (#20) adds the swatch.
   const [derivedColor, setDerivedColor] = useState<string | null>(null);
   const [matchActive, setMatchActive] = useState(false);
+  // ADR-0008 sticky-pick guard. Auto-engage must fire "exactly once" per session,
+  // gated on the user never having expressed a Canvas-color preference. Distinct
+  // from `matchActive` because `matchActive` flips off the moment the user clicks
+  // W/B/T — but the "I have made a choice" signal needs to outlive that, so a
+  // subsequent canvas-empty transition (delete-all-Images, undo back to empty)
+  // doesn't let the next paste re-fire the auto-engage path and silently override
+  // the user's explicit pick. Set true on any W/B/T click and never cleared for
+  // the session. (Slice 2 / #20 will also set this when the user clicks the new
+  // Match swatch — same intent: any explicit Canvas-color action is a "user has
+  // chosen".)
+  const [userPickedCanvasColor, setUserPickedCanvasColor] = useState(false);
   // Effective color passed down to the editor. When Match is active AND we
   // have a successfully derived color, that wins; otherwise the explicit
   // user pick stays in charge. Transparent / Black / White all flow through
@@ -145,12 +156,15 @@ export default function FreeformApp() {
   //    Match swatch (slice 2 / #20), there's something to engage with.
   //
   // 2. Auto-engage on first paste: if the canvas was empty before this paste
-  //    AND extraction succeeded, flip `matchActive` to true. `hasImages` in
-  //    closure is the pre-paste value because the callback was built from the
-  //    previous render and the editor's handle captured it at addImage-call
-  //    time. By the time this handler fires, the editor has already called
-  //    onHasImagesChange(true), but React batches the resulting re-render so
-  //    `hasImages` here still reflects the prior state.
+  //    AND extraction succeeded AND the user hasn't expressed an explicit
+  //    Canvas-color preference yet, flip `matchActive` to true. The
+  //    "was the canvas empty before this paste" signal comes from the editor
+  //    as `wasEmpty` — it's computed synchronously inside the editor's
+  //    queued addImage mutation BEFORE canvas.add, so it's race-free across
+  //    rapid double-pastes. Reading React `hasImages` from closure here is
+  //    NOT safe: two pastes fired close together both capture `hasImages ===
+  //    false` and would both auto-engage. (`userPickedCanvasColor` is the
+  //    other half of the gate — see below.)
   //
   // 3. Silent fallback on first-paste extraction failure: when the canvas is
   //    empty and extraction returns null (all-white screenshot, all-grayscale
@@ -159,15 +173,20 @@ export default function FreeformApp() {
   //    Match-active, failure simply keeps the previously cached derivedColor
   //    — handled by NOT clearing it on null.
   const handleImagePastedDominantColor = useCallback(
-    (color: string | null) => {
+    (color: string | null, wasEmpty: boolean) => {
       if (color !== null) {
         setDerivedColor(color);
-        // Auto-engage only on the first paste into an empty canvas, and only
-        // when we actually got a usable color out. If extraction failed,
-        // matchActive stays false (silent fallback) so the canvas reads as
-        // White until the user pastes something colorful or clicks Match in
-        // slice 2.
-        if (!hasImages) {
+        // Auto-engage gate has two halves:
+        //   - `wasEmpty`: editor-synchronous "canvas was empty when this
+        //     paste's queued mutation actually ran". Rules out paste-2 in
+        //     a rapid double-paste — paste-1 has already added its image
+        //     to canvas by the time paste-2's mutation evaluates this.
+        //   - `!userPickedCanvasColor`: the user has not clicked any W/B/T
+        //     swatch this session. Once they have, auto-engage is forever
+        //     off — even if the canvas later goes empty again (delete-all
+        //     or undo to empty) and they paste again. ADR-0008 says Match
+        //     auto-engages "exactly once".
+        if (wasEmpty && !userPickedCanvasColor) {
           setMatchActive(true);
         }
       }
@@ -176,19 +195,22 @@ export default function FreeformApp() {
       // "previous color on subsequent failures" rule). If Match was inactive,
       // nothing happens.
     },
-    [hasImages],
+    [userPickedCanvasColor],
   );
 
-  // Wrap setCanvasColor so an explicit W/B/T pick also disengages Match.
-  // ADR-0008 makes the carve-out explicit: paste-driven updates apply only
-  // while Match is active, and an explicit user pick is the only way to turn
-  // Match off in slice 1 (slice 2 / #20 adds the re-engage path via the 4th
-  // swatch). Keeping this in a single callback rather than two setX calls on
-  // the swatch onClick avoids accidentally forgetting one of them at a
-  // future call site.
+  // Wrap setCanvasColor so an explicit W/B/T pick also disengages Match AND
+  // arms the sticky "user has chosen" guard so a later canvas-empty transition
+  // (delete-all, undo to empty) doesn't let the next paste re-fire auto-engage
+  // and override the user's pick. ADR-0008 makes the carve-out explicit: paste-
+  // driven updates apply only while Match is active, and an explicit user pick
+  // is the only way to turn Match off in slice 1 (slice 2 / #20 adds the re-
+  // engage path via the 4th swatch). Keeping this in a single callback rather
+  // than three setX calls on the swatch onClick avoids accidentally forgetting
+  // one of them at a future call site.
   const handleCanvasColorPick = useCallback((value: FreeformCanvasColor) => {
     setCanvasColor(value);
     setMatchActive(false);
+    setUserPickedCanvasColor(true);
   }, []);
 
   // Append an image to the Canvas. Unlike Skitch's loadImageFile, this never
