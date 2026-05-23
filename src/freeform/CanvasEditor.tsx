@@ -89,8 +89,9 @@ const IMAGE_STROKE = {
 // grows by strokeWidth/(2*displayScale) on each side. At the soft-cap of 2-4
 // images (displayScale typically 0.5-1.0) that's at most 1px per side in
 // scene coords. Use a flat 1px on each side — overkill but safe, and keeps
-// fit-to-viewport and export from clipping the hairline. Annotations remain
-// at their bare rect (no stroke).
+// fit-to-viewport and export from clipping the hairline. Stroked annotations
+// (rectangle, text halo) get their own per-object strokeWidth/2 expansion
+// inside objectBoundsWithShadow — see there.
 const STROKE_EXTENT = 1;
 
 // Per-side scene-coord extent the IMAGE_SHADOW adds beyond an Image's geometry.
@@ -257,7 +258,20 @@ function objectBoundsWithShadow(object: FabricObject): {
       bottom: bottom + SHADOW_EXTENT.bottom + STROKE_EXTENT,
     };
   }
-  return { left, top, right, bottom };
+  // For stroked annotations (rectangles, text halos), Fabric paints the stroke
+  // centered on the geometric edge, so half the strokeWidth hangs outside the
+  // nominal rect. Without this, a rectangle whose right edge defines maxRight
+  // gets its outer-half stroke clipped flush against the canvas pixel buffer.
+  // Filled-only shapes (arrows, blur) have no `stroke` set and contribute 0.
+  const strokeHalf = (object as FabricObject).stroke
+    ? ((object as FabricObject).strokeWidth ?? 0) / 2
+    : 0;
+  return {
+    left: left - strokeHalf,
+    top: top - strokeHalf,
+    right: right + strokeHalf,
+    bottom: bottom + strokeHalf,
+  };
 }
 
 // ADR-0006 layer-order helpers. The Annotation-above-Image invariant from
@@ -608,10 +622,14 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       displayScaleRef.current = scale;
       canvas.setDimensions({ width: width * scale, height: height * scale });
       canvas.setZoom(scale);
-      // Translate so scene (minLeft, minTop) renders at display (0, 0). When
-      // all content sits at left/top >= 0 (the only case in this slice — no
-      // Annotations yet), the pan is a no-op.
-      canvas.absolutePan(new Point(minLeft, minTop));
+      // Translate so scene (minLeft, minTop) renders at display (0, 0).
+      // Fabric's absolutePan writes its argument straight into
+      // viewportTransform[4]/[5], which are DISPLAY-pixel translations — so
+      // the argument must be pre-multiplied by the current zoom. Without the
+      // `* scale`, when zoom < 1 the pan over-shifts by (1 - scale) * |minLeft|
+      // display pixels, leaving a wide gap on the left and clipping content
+      // off the right edge of the canvas pixel buffer.
+      canvas.absolutePan(new Point(minLeft * scale, minTop * scale));
       canvas.requestRenderAll();
     };
 
