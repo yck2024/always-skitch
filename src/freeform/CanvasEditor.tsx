@@ -165,6 +165,14 @@ interface CanvasEditorProps {
   // `onHasImagesChange` because a stray annotation with no Image still counts
   // as exportable content per issue #10 acceptance criteria.
   onHasContentChange?: (hasContent: boolean) => void;
+  // ADR-0006: open the right-click context menu at the given viewport
+  // coordinates (relative to the page, not the canvas). The editor handles
+  // the right-click semantics itself (selecting the target Image if it isn't
+  // already selected, preserving multi-selection if it is) — this callback
+  // exists purely to tell the parent WHERE to render the menu overlay.
+  // Receives `null` when the menu should close (e.g., right-click in a
+  // drawing tool or on empty Canvas).
+  onContextMenu?: (position: { x: number; y: number } | null) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
@@ -172,10 +180,11 @@ export interface FreeformCanvasEditorHandle {
   undo: () => void;
   redo: () => void;
   recolorSelected: (color: string) => void;
-  // Remove every selected Image from the canvas. Annotations on top of a
-  // deleted Image stay (ADR-0003: canvas-level annotations). The filter is
-  // defensive so a future Annotation selection model can't accidentally
-  // vacuum them up.
+  // Remove every selected object from the canvas (Images and/or Annotations).
+  // Pre-ADR-0006 this was Image-only — see ADR-0006 consequences: that filter
+  // was a #7-era anachronism (Annotations weren't selectable yet at the time).
+  // Now keyboard Backspace/Delete and the right-click menu's Delete share this
+  // single entry point.
   deleteSelected: () => void;
   // Copy a PNG of the current canvas (content bbox + padding, Canvas color
   // background, natural resolution) to the clipboard. Falls back to download
@@ -184,6 +193,12 @@ export interface FreeformCanvasEditorHandle {
   copyPng: () => Promise<void>;
   // Save the same PNG to the user's Downloads folder.
   downloadPng: () => Promise<void>;
+  // ADR-0006 layer reorder. Operate on the current active selection, scoped
+  // to Image-kind members (Annotations in a mixed selection are ignored and
+  // stay in place). No-op on empty or Annotation-only selections. Each call
+  // is its own undo step.
+  bringSelectedImagesToFront: () => void;
+  sendSelectedImagesToBack: () => void;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
@@ -196,11 +211,17 @@ function imageObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind === 'image');
 }
 
+function isImageObject(object: FabricObject): boolean {
+  return (object as TaggedObject).data?.kind === 'image';
+}
+
+function isAnnotationObject(object: FabricObject): boolean {
+  const kind = (object as TaggedObject).data?.kind;
+  return kind !== undefined && kind !== 'image';
+}
+
 function annotationObjects(canvas: Canvas): FabricObject[] {
-  return canvas.getObjects().filter((object) => {
-    const kind = (object as TaggedObject).data?.kind;
-    return kind !== undefined && kind !== 'image';
-  });
+  return canvas.getObjects().filter(isAnnotationObject);
 }
 
 // All Freeform-tagged content, in render order (background-to-foreground).
@@ -237,6 +258,43 @@ function objectBoundsWithShadow(object: FabricObject): {
     };
   }
   return { left, top, right, bottom };
+}
+
+// ADR-0006 layer-order helpers. The Annotation-above-Image invariant from
+// ADR-0003 is ABSOLUTE: we never call Fabric's raw `bringObjectToFront(image)`
+// because that would put the Image above every Annotation. Instead, these
+// helpers compute the target index manually so the Image lands at the top
+// (or bottom) of the **Image** stack only.
+//
+// Implementation note for `bringImageToTopOfImages`: Fabric's
+// `moveObjectTo(obj, idx)` removes the object first, then splices at `idx`.
+// If the image currently sits before the lowest-indexed Annotation, removing
+// it shifts that annotation index left by 1 — hence the `< aIdx ? aIdx - 1 : aIdx`
+// branch. When there are no Annotations, the top of the Image stack is just
+// the end of the array (post-removal length).
+function bringImageToTopOfImages(canvas: Canvas, image: FabricObject): boolean {
+  const objects = canvas.getObjects();
+  const currentIdx = objects.indexOf(image);
+  if (currentIdx === -1) return false;
+  const lowestAnnotationIdx = objects.findIndex(isAnnotationObject);
+  let targetIdx: number;
+  if (lowestAnnotationIdx === -1) {
+    // No annotations: top of Image stack is the end of the array post-removal.
+    targetIdx = objects.length - 1;
+  } else {
+    // Just below the lowest annotation. Adjust for removal shift.
+    targetIdx = currentIdx < lowestAnnotationIdx ? lowestAnnotationIdx - 1 : lowestAnnotationIdx;
+  }
+  if (currentIdx === targetIdx) return false;
+  return canvas.moveObjectTo(image, targetIdx);
+}
+
+// Bottom of the Image stack is always index 0 — Annotations all sit above the
+// Image strata so we never need to clamp against them on the back side.
+function sendImageToBackOfImages(canvas: Canvas, image: FabricObject): boolean {
+  const objects = canvas.getObjects();
+  if (objects.indexOf(image) === 0) return false;
+  return canvas.moveObjectTo(image, 0);
 }
 
 // Apply per-Image interaction defaults: hide the middle (side) scaling handles
@@ -428,6 +486,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onToolChange,
       onSelectionChange,
       onHasContentChange,
+      onContextMenu,
     },
     ref,
   ) {
@@ -475,6 +534,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // Same pattern for the content-change callback: the imperative handle and
     // history paths need to push hasContent updates without re-binding.
     const onHasContentChangeRef = useRef(onHasContentChange);
+    // Context-menu callback, mirrored for the same reason: the `contextmenu`
+    // handler bound during canvas setup needs to fire the latest callback
+    // identity without re-binding.
+    const onContextMenuRef = useRef(onContextMenu);
     // Mirror of canvasColor so `exportDataUrl` (called from imperative-handle
     // methods, NOT inside an effect) can read the latest value via ref. We
     // could read it through closure capture in the handle deps, but the ref
@@ -576,6 +639,50 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onHasContentChangeRef.current?.(next);
     };
 
+    // ADR-0006 layer reorder applied to the current active selection.
+    //
+    // Direction-of-iteration math: each `bringImageToTopOfImages` call lands
+    // its target at the top of the Image stack (just below any Annotations).
+    // To preserve internal relative order while sending the whole group to
+    // the top, walk lowest-current-index first — the last image processed
+    // ends up topmost, matching its higher pre-call position. For send-to-
+    // back the mirror image: each call drops its target to index 0, so walk
+    // highest-current-index first.
+    //
+    // Mixed selections: Annotations in the selection are ignored. Empty or
+    // Annotation-only selections are no-ops. Each invocation is its own undo
+    // step (snapshot pushed at the end). The active selection itself is
+    // preserved — Fabric's `ActiveSelection` references survive index moves
+    // because we operate on the underlying objects, not on the selection
+    // wrapper.
+    const applyLayerReorder = (direction: 'front' | 'back') => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const selected = canvas.getActiveObjects().filter(isImageObject);
+      if (selected.length === 0) return;
+      const objects = canvas.getObjects();
+      // Iterate so each call to bring/sendImageTo*OfImages walks the group
+      // forward without scrambling its internal order. For `front`, iterate
+      // ascending (lowest-index Image first) — each is moved on top of the
+      // Image stack, so the highest-index Image ends up topmost at the end.
+      // For `back`, iterate descending (highest-index first) — each is moved
+      // to the bottom, so the lowest-index Image lands at the very bottom
+      // last. Either way, the group's internal stacking is preserved.
+      const sorted = [...selected].sort((a, b) => objects.indexOf(a) - objects.indexOf(b));
+      const ordered = direction === 'front' ? sorted : [...sorted].reverse();
+      let changed = false;
+      for (const image of ordered) {
+        const moved =
+          direction === 'front'
+            ? bringImageToTopOfImages(canvas, image)
+            : sendImageToBackOfImages(canvas, image);
+        if (moved) changed = true;
+      }
+      if (!changed) return;
+      canvas.requestRenderAll();
+      saveHistorySnapshot();
+    };
+
     // Unified interactivity sync: apply selectable/evented to BOTH Images
     // (concern from #7) AND annotations (concern from #6) based on the current
     // tool. In Select mode every Freeform object is interactive; in any drawing
@@ -657,6 +764,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     useEffect(() => {
       onHasContentChangeRef.current = onHasContentChange;
     }, [onHasContentChange]);
+
+    useEffect(() => {
+      onContextMenuRef.current = onContextMenu;
+    }, [onContextMenu]);
 
     useEffect(() => {
       canvasColorRef.current = canvasColor;
@@ -1026,6 +1137,79 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         callback(canvas.getActiveObjects().length > 0);
       };
 
+      // ADR-0006 right-click context menu.
+      //
+      // Rules:
+      // - Select tool + right-click ON an Image: select-then-show. If the
+      //   image isn't currently in the active selection, replace selection
+      //   with just it; if it IS already part of an ActiveSelection, preserve
+      //   the existing multi-selection (Apple Freeform / Figma convention).
+      //   Then suppress the browser default and fire the menu-open callback.
+      // - Select tool + right-click on empty Canvas or an Annotation: let
+      //   the browser default fire (no custom menu). The spec describes the
+      //   menu specifically for Images.
+      // - Any drawing tool: also let the browser default through. Images are
+      //   non-evented in drawing tools by construction (#7 + #6 freeze),
+      //   so reorder is Select-tool-only.
+      //
+      // We bind directly to the upper canvas element's DOM `contextmenu`
+      // event rather than using Fabric's `mouse:down` with button===2 because
+      // (a) DOM contextmenu fires once per gesture and lets us preventDefault
+      // cleanly, and (b) Fabric's mouse event normalizes away the `button`
+      // index on some platforms.
+      const handleContextMenu = (event: MouseEvent) => {
+        const tool = activeToolRef.current;
+        if (tool !== 'select') {
+          // Drawing tools: browser default. Bail without touching anything.
+          return;
+        }
+        // Hit-test in scene coords. Walk ALL Freeform objects top-to-bottom
+        // in render order — the visually-frontmost hit wins. If the topmost
+        // hit is an Annotation (or there's no Freeform hit at all), the menu
+        // doesn't open: we own it only for direct Image right-clicks per
+        // spec. This avoids the surprise of right-clicking a callout sitting
+        // on top of an Image and getting the underlying-Image menu.
+        const scenePoint = canvas.getScenePoint(event);
+        const all = freeformObjects(canvas);
+        let topHit: FabricObject | undefined;
+        for (let i = all.length - 1; i >= 0; i -= 1) {
+          if (all[i].containsPoint(scenePoint)) {
+            topHit = all[i];
+            break;
+          }
+        }
+        const target = topHit && isImageObject(topHit) ? topHit : undefined;
+        if (!target) {
+          // Right-click on empty Canvas, an Annotation, or anything else.
+          // Per spec we only own the menu for direct Image hits; let the
+          // browser default through and ensure any open menu closes.
+          onContextMenuRef.current?.(null);
+          return;
+        }
+        // Selection-on-right-click. Preserve a multi-selection that already
+        // contains the right-clicked Image (`ActiveSelection` is Fabric's
+        // wrapper around multi-select); otherwise replace selection with
+        // just the target.
+        const activeObjects = canvas.getActiveObjects();
+        const alreadyPartOfMultiSelection = activeObjects.length > 1 && activeObjects.includes(target);
+        if (!alreadyPartOfMultiSelection) {
+          canvas.setActiveObject(target);
+          // setActiveObject doesn't always emit selection:updated for a
+          // replace-from-different-target case; push the change so the
+          // parent's Delete button + any other selection-aware UI updates.
+          emitSelectionChange();
+        }
+        canvas.requestRenderAll();
+        event.preventDefault();
+        // Anchor the menu at the click coordinates in viewport-relative
+        // pixels. The overlay in App.tsx is `position: fixed` so these map
+        // directly without any further translation.
+        onContextMenuRef.current?.({ x: event.clientX, y: event.clientY });
+      };
+
+      const upperCanvas = canvas.upperCanvasEl;
+      upperCanvas.addEventListener('contextmenu', handleContextMenu);
+
       canvas.on('mouse:down', handleMouseDown);
       canvas.on('mouse:move', handleMouseMove);
       canvas.on('mouse:up', handleMouseUp);
@@ -1037,6 +1221,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.on('selection:cleared', emitSelectionChange);
 
       return () => {
+        upperCanvas.removeEventListener('contextmenu', handleContextMenu);
         canvas.dispose();
         canvasRef.current = null;
       };
@@ -1309,12 +1494,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             });
             applyImageInteractionDefaults(image);
             canvas.add(image);
-            // Layer invariant (ADR-0003 layer rule): every Image renders below
-            // every Annotation, regardless of paste/draw order. Without this,
-            // pasting a NEW Image after an Annotation was drawn would cover
-            // the drawing. sendObjectToBack puts the freshly-added Image at
-            // the bottom of the stack; existing Annotations stay on top.
-            canvas.sendObjectToBack(image);
+            // ADR-0006: a freshly pasted Image lands at the TOP of the Image
+            // stack, still below all Annotations. This replaces the earlier
+            // `sendObjectToBack` call — whose original intent was "stay below
+            // Annotations," not "stay below older Images." The helper keeps
+            // the Annotation-above-Image invariant from ADR-0003 in one place
+            // and preserves the same intent without the side effect of
+            // reverse paste order (which made newer pastes hide behind
+            // older ones).
+            bringImageToTopOfImages(canvas, image);
             canvas.requestRenderAll();
             // Inform parent BEFORE fitting: the canvas element only becomes
             // visible (display: block) on the parent's hasImages flip, so the
@@ -1397,13 +1585,16 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         deleteSelected: () => {
           const canvas = canvasRef.current;
           if (!canvas) return;
-          // Scope deletion to Image-kind objects (#7). Annotations on top of a
-          // deleted Image are explicitly preserved per ADR-0003: they're
-          // canvas-level, not bound to any Image. When Annotation selection
-          // becomes its own concern, this filter is the right place to widen.
+          // ADR-0006: delete ANY selected Freeform object (Images and/or
+          // Annotations). The earlier #7 filter to Image-kind only was an
+          // anachronism — at that time Annotations weren't selectable. Now
+          // both kinds are selectable, and matching keyboard + right-click
+          // menu behavior is to vacuum up whatever the user picked. We still
+          // filter to `data.kind !== undefined` so any future non-Freeform
+          // object (e.g., a guideline overlay) can't be killed accidentally.
           const targets = canvas
             .getActiveObjects()
-            .filter((object) => (object as TaggedObject).data?.kind === 'image');
+            .filter((object) => (object as TaggedObject).data?.kind !== undefined);
           if (targets.length === 0) return;
           targets.forEach((object) => canvas.remove(object));
           canvas.discardActiveObject();
@@ -1418,6 +1609,17 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           // `object:modified` doesn't fire on remove, so we push the snapshot
           // here. (The Skitch path does the equivalent.)
           saveHistorySnapshot();
+        },
+        // ADR-0006 layer reorder. The two methods share a single helper that
+        // collects Image-kind members of the active selection, sorts them by
+        // current canvas index, and walks them in the order that preserves
+        // internal relative stacking. See `applyLayerReorder` for the
+        // direction-of-iteration math.
+        bringSelectedImagesToFront: () => {
+          applyLayerReorder('front');
+        },
+        sendSelectedImagesToBack: () => {
+          applyLayerReorder('back');
         },
       }),
       // Stable handle: the closures above read from refs and the latest props
