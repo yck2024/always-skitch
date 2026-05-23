@@ -69,6 +69,25 @@ export default function FreeformApp() {
   // also counts as content — though in normal flow Annotations require an
   // Image; this just keeps the gating expressive and forward-compatible.
   const [hasContent, setHasContent] = useState(false);
+  // ADR-0006 right-click context menu. `null` = closed; an `{x, y}` pair
+  // means open at that viewport position. Position is in fixed-position
+  // pixel coords — see the overlay below. The CanvasEditor handles the
+  // right-click semantics (select target Image, decide whether to suppress
+  // browser default); App.tsx is responsible only for rendering the menu
+  // and routing item clicks back through the imperative handle.
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Close the right-click menu. Used by item handlers, Esc, click-outside,
+  // and any state change that should reset the menu (tool switch).
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Tool switch dismisses any open menu: right-click reorder is Select-tool
+  // only, so a tool change makes any visible menu stale. Cheap dependency-
+  // only effect — runs when `activeTool` changes regardless of menu state,
+  // and `setContextMenu(null)` short-circuits in React if already null.
+  useEffect(() => {
+    if (activeTool !== 'select') setContextMenu(null);
+  }, [activeTool]);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = Date.now();
@@ -138,15 +157,23 @@ export default function FreeformApp() {
         event.preventDefault();
         editorRef.current?.redo();
       } else if ((event.key === 'Backspace' || event.key === 'Delete') && !isEditingText) {
-        // Delete / Backspace removes selected Images (#7). The editor's
-        // `deleteSelected` filters to Image-kind objects, so this is a no-op
-        // when nothing is selected or only Annotations are. Annotations on
-        // top of the deleted Image stay (ADR-0003).
+        // Delete / Backspace removes whatever is currently selected
+        // (Images and/or Annotations — see ADR-0006 consequences for why
+        // the earlier Image-only filter was widened). Annotations on top of
+        // a deleted Image still stay unless explicitly part of the selection
+        // (ADR-0003 keeps Annotations canvas-level).
         event.preventDefault();
         editorRef.current?.deleteSelected();
       } else if (event.key === 'Escape' && !isEditingText) {
-        // Esc bails out of any drawing tool back to Select. Matches Skitch.
-        setActiveTool('select');
+        // Esc has two layered jobs: dismiss the right-click menu first if
+        // open, otherwise bail any drawing tool back to Select. Mirrors a
+        // common app convention (Figma/Photoshop) where a transient overlay
+        // claims Esc before the global tool reset does.
+        if (contextMenu) {
+          closeContextMenu();
+        } else {
+          setActiveTool('select');
+        }
       } else if (!meta && !isEditingText) {
         // Single-key tool shortcuts (#6), mirroring Skitch's bindings so muscle
         // memory transfers between the two products.
@@ -170,6 +197,19 @@ export default function FreeformApp() {
           // memory transfers between the two products.
           event.preventDefault();
           setActiveTool('blur');
+        } else if (event.key === ']') {
+          // ADR-0006: Bring Image(s) to Front. Editor scopes the action to
+          // Image-kind members of the active selection, so empty / Annotation-
+          // only selections are no-ops. We don't gate on tool here — in any
+          // drawing tool nothing is selected (Images are non-evented), so
+          // the editor naturally no-ops. preventDefault stops the browser
+          // from also treating `]` as a hotkey (rare but cheap insurance).
+          event.preventDefault();
+          editorRef.current?.bringSelectedImagesToFront();
+        } else if (event.key === '[') {
+          // ADR-0006: Send Image(s) to Back. Mirror of the above.
+          event.preventDefault();
+          editorRef.current?.sendSelectedImagesToBack();
         }
       }
     };
@@ -180,7 +220,7 @@ export default function FreeformApp() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [appendImageFile]);
+  }, [appendImageFile, contextMenu, closeContextMenu]);
 
   return (
     <div className="app">
@@ -247,9 +287,10 @@ export default function FreeformApp() {
           Redo
         </button>
         {/* Delete button mirrors the Backspace/Delete keyboard shortcut. The
-            editor filters to Image-kind selected objects and no-ops if none —
-            so the button is only enabled when something is actually selected
-            on the canvas (driven by `onSelectionChange` from the editor). */}
+            editor removes any Freeform-tagged objects in the current selection
+            — Images and Annotations alike — and no-ops on empty selection. The
+            button is enabled whenever something is selected on the canvas
+            (driven by `onSelectionChange` from the editor). */}
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
@@ -290,8 +331,35 @@ export default function FreeformApp() {
           onToolChange={setActiveTool}
           onSelectionChange={setHasSelection}
           onHasContentChange={setHasContent}
+          onContextMenu={setContextMenu}
         />
       </main>
+
+      {/* ADR-0006 right-click context menu. Rendered at the document root via
+          a `position: fixed` div anchored at the click coordinates (which the
+          editor passes through verbatim — see CanvasEditor's `handleContextMenu`).
+          Click-outside is implemented by a transparent backdrop sibling that
+          catches the next pointerdown anywhere on the page; we cannot use Esc
+          alone because users might also click on the page to dismiss. */}
+      {contextMenu ? (
+        <FreeformContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onBringToFront={() => {
+            editorRef.current?.bringSelectedImagesToFront();
+            closeContextMenu();
+          }}
+          onSendToBack={() => {
+            editorRef.current?.sendSelectedImagesToBack();
+            closeContextMenu();
+          }}
+          onDelete={() => {
+            editorRef.current?.deleteSelected();
+            closeContextMenu();
+          }}
+          onDismiss={closeContextMenu}
+        />
+      ) : null}
 
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
         {toasts.map((toast) => (
@@ -301,5 +369,92 @@ export default function FreeformApp() {
         ))}
       </div>
     </div>
+  );
+}
+
+interface FreeformContextMenuProps {
+  x: number;
+  y: number;
+  onBringToFront: () => void;
+  onSendToBack: () => void;
+  onDelete: () => void;
+  onDismiss: () => void;
+}
+
+// ADR-0006 right-click menu. Three items: Bring to Front, Send to Back,
+// Delete. The first two are the new ADR-0006 commands; Delete mirrors the
+// keyboard Backspace/Delete behavior so the menu is self-sufficient for
+// per-Image actions without forcing the user back to the keyboard.
+//
+// Dismissal:
+// - Click-outside: a transparent full-viewport backdrop catches pointerdown
+//   *before* the menu's own click handlers (z-order + stopPropagation on the
+//   menu div). Cheaper and more reliable than a window-level pointerdown
+//   listener with a hit-test against the menu element.
+// - Esc: handled at the App level (see the keyboard handler above) so that
+//   open-menu Esc and global Esc-to-Select don't compete.
+// - Item click: each item calls its handler then onDismiss.
+//
+// Positioning clamps to the viewport so a right-click near the right or
+// bottom edge doesn't push the menu off-screen. Conservative constants
+// (slightly larger than the .context-menu min-width and the 3-item natural
+// height) avoid a layout-measure pass and the flash that comes with one; if
+// the menu ever gains items or its styling changes its size, bump these.
+const CONTEXT_MENU_WIDTH = 200;
+const CONTEXT_MENU_HEIGHT = 132;
+const CONTEXT_MENU_EDGE_MARGIN = 8;
+
+function FreeformContextMenu({
+  x,
+  y,
+  onBringToFront,
+  onSendToBack,
+  onDelete,
+  onDismiss,
+}: FreeformContextMenuProps) {
+  const maxX = window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_EDGE_MARGIN;
+  const maxY = window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_EDGE_MARGIN;
+  const clampedX = Math.max(CONTEXT_MENU_EDGE_MARGIN, Math.min(x, maxX));
+  const clampedY = Math.max(CONTEXT_MENU_EDGE_MARGIN, Math.min(y, maxY));
+  return (
+    <>
+      <div
+        className="context-menu-backdrop"
+        onPointerDown={onDismiss}
+        // Suppress contextmenu on the backdrop itself — without this, a
+        // second right-click while the menu is open would briefly show the
+        // browser default before dismissing.
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onDismiss();
+        }}
+      />
+      <div
+        className="context-menu"
+        role="menu"
+        aria-label="Image actions"
+        style={{ left: clampedX, top: clampedY }}
+        // Stop pointerdown so the backdrop doesn't immediately dismiss when
+        // the user clicks a menu item.
+        onPointerDown={(event) => event.stopPropagation()}
+        // Also suppress contextmenu on the menu itself — right-clicking a
+        // menu item shouldn't pop the browser default while our menu is
+        // visible. Mirrors the backdrop handler.
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onDismiss();
+        }}
+      >
+        <button type="button" role="menuitem" onClick={onBringToFront}>
+          Bring to Front
+        </button>
+        <button type="button" role="menuitem" onClick={onSendToBack}>
+          Send to Back
+        </button>
+        <button type="button" role="menuitem" onClick={onDelete}>
+          Delete
+        </button>
+      </div>
+    </>
   );
 }

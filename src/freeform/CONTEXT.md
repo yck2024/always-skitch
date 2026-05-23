@@ -23,12 +23,22 @@ The pen color new **Annotations** are drawn in. Unlike Skitch, the **Active colo
 The color of the **Canvas** itself — shows in empty space between **Images** and forms the background of the exported PNG. User picks from White (default), Black, or Transparent. Independent of the **Active color**; changing one does not affect the other.
 _Avoid_: backdrop, paper, fill
 
+**Layer order**:
+The front-to-back stacking of objects on the **Canvas**. **Annotations** always render above **Images** — an unbreakable rule. Among **Images**, **Layer order** is user-controlled via **Bring to Front** and **Send to Back**. Among **Annotations**, draw order determines the stack (newer in front).
+_Avoid_: z-order, stacking, depth, level
+
+**Bring to Front / Send to Back**:
+The two commands the user invokes (keyboard `]` / `[`, or right-click menu) to move selected **Images** to the top or bottom of the **Image** layer stack. Applies only to **Images** in the selection; Annotations and empty selections are no-ops.
+_Avoid_: raise, lower, promote, demote
+
 ## Relationships
 
 - A **Canvas** hosts zero or more **Images** and zero or more **Annotations**.
 - **Images** and **Annotations** are siblings on the **Canvas** — no parent-child relationship between them.
 - An **Annotation** does NOT move when an **Image** moves. To move them together, the user group-selects first.
-- **Annotations** always render on top of all **Images**, regardless of paste/draw order. Within each kind, newer is in front of older. There are no "bring to front / send to back" controls in MVP.
+- **Annotations** always render on top of all **Images**. The user has no operation that puts an **Image** above an **Annotation**.
+- Among **Annotations**, **Layer order** follows draw order — newer in front of older. There are no per-Annotation reorder controls in MVP.
+- Among **Images**, **Layer order** is user-controlled via **Bring to Front** / **Send to Back**. A freshly pasted **Image** lands at the top of the Image stack by default (still below all Annotations).
 
 ## Example dialogue
 
@@ -36,3 +46,7 @@ _Avoid_: backdrop, paper, fill
 > **PM:** "No. Annotations live in Canvas coordinates. If the user wants them to move together, they group-select first."
 > **Dev:** "What if I paste a new Image — does it land on top of my existing Annotations?"
 > **PM:** "No. Annotations always render on top of all Images. Pasting another Image can never cover your annotations."
+> **Dev:** "What about another Image — can a new paste cover an older Image?"
+> **PM:** "Yes. New pastes land on top of the existing Image stack by default. If the user wants a different order, they select an Image and press `]` (Bring to Front) or `[` (Send to Back)."
+> **Dev:** "If I select both an Image and an Annotation and press `]`?"
+> **PM:** "Only the Image moves. Annotations are ignored by the layer commands — they're already above all Images by rule."
