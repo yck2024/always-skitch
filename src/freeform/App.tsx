@@ -287,9 +287,10 @@ export default function FreeformApp() {
           Redo
         </button>
         {/* Delete button mirrors the Backspace/Delete keyboard shortcut. The
-            editor filters to Image-kind selected objects and no-ops if none —
-            so the button is only enabled when something is actually selected
-            on the canvas (driven by `onSelectionChange` from the editor). */}
+            editor removes any Freeform-tagged objects in the current selection
+            — Images and Annotations alike — and no-ops on empty selection. The
+            button is enabled whenever something is selected on the canvas
+            (driven by `onSelectionChange` from the editor). */}
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
@@ -394,11 +395,15 @@ interface FreeformContextMenuProps {
 //   open-menu Esc and global Esc-to-Select don't compete.
 // - Item click: each item calls its handler then onDismiss.
 //
-// Positioning is intentionally simple — no flip-to-fit on overflow. The
-// expected use is right-clicking an Image already on the visible Canvas, so
-// the menu naturally lands within the viewport. If a future Canvas grows
-// past the viewport edge we can add transform: translate(-100%, -100%)
-// fallback logic; YAGNI for the 2-4-Image MVP scale (ADR-0004).
+// Positioning clamps to the viewport so a right-click near the right or
+// bottom edge doesn't push the menu off-screen. Conservative constants
+// (slightly larger than the .context-menu min-width and the 3-item natural
+// height) avoid a layout-measure pass and the flash that comes with one; if
+// the menu ever gains items or its styling changes its size, bump these.
+const CONTEXT_MENU_WIDTH = 200;
+const CONTEXT_MENU_HEIGHT = 132;
+const CONTEXT_MENU_EDGE_MARGIN = 8;
+
 function FreeformContextMenu({
   x,
   y,
@@ -407,6 +412,10 @@ function FreeformContextMenu({
   onDelete,
   onDismiss,
 }: FreeformContextMenuProps) {
+  const maxX = window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_EDGE_MARGIN;
+  const maxY = window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_EDGE_MARGIN;
+  const clampedX = Math.max(CONTEXT_MENU_EDGE_MARGIN, Math.min(x, maxX));
+  const clampedY = Math.max(CONTEXT_MENU_EDGE_MARGIN, Math.min(y, maxY));
   return (
     <>
       <div
@@ -424,7 +433,7 @@ function FreeformContextMenu({
         className="context-menu"
         role="menu"
         aria-label="Image actions"
-        style={{ left: x, top: y }}
+        style={{ left: clampedX, top: clampedY }}
         // Stop pointerdown so the backdrop doesn't immediately dismiss when
         // the user clicks a menu item.
         onPointerDown={(event) => event.stopPropagation()}

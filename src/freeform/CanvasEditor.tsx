@@ -568,10 +568,13 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       const selected = canvas.getActiveObjects().filter(isImageObject);
       if (selected.length === 0) return;
       const objects = canvas.getObjects();
-      // Sort by current canvas index (ascending). Lowest-index first preserves
-      // internal order under `front`; we reverse for `back` so the highest-
-      // index Image lands at index 0 last, leaving the lower-indexed Images
-      // stacked above it but still below the prior bottom of the Image stack.
+      // Iterate so each call to bring/sendImageTo*OfImages walks the group
+      // forward without scrambling its internal order. For `front`, iterate
+      // ascending (lowest-index Image first) — each is moved on top of the
+      // Image stack, so the highest-index Image ends up topmost at the end.
+      // For `back`, iterate descending (highest-index first) — each is moved
+      // to the bottom, so the lowest-index Image lands at the very bottom
+      // last. Either way, the group's internal stacking is preserved.
       const sorted = [...selected].sort((a, b) => objects.indexOf(a) - objects.indexOf(b));
       const ordered = direction === 'front' ? sorted : [...sorted].reverse();
       let changed = false;
