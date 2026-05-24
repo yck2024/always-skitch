@@ -528,7 +528,7 @@ function nextStepNumber(canvas: Canvas) {
   let max = 0;
   for (const object of canvas.getObjects()) {
     if ((object as TaggedObject).data?.kind !== 'callout') continue;
-    const children = (object as Group & { _objects?: FabricObject[] })._objects ?? [];
+    const children = (object as Group).getObjects();
     const text = children.find((child): child is Text => child instanceof Text);
     const parsed = text ? parseInt(text.text ?? '', 10) : NaN;
     if (Number.isFinite(parsed) && parsed > max) max = parsed;
