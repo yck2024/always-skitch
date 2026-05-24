@@ -453,6 +453,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         addFinalObject(text);
         text.enterEditing();
         text.selectAll();
+        // System-wide ADR-0003: Text is the one-shot drawing tool. When edit
+        // mode exits (click outside, Esc, Tab, programmatic blur), snap back
+        // to Select so the gesture that finished typing doesn't silently
+        // spawn another text box. `once` self-detaches so re-editing this
+        // same Textbox later doesn't reapply the snap.
+        text.once('editing:exited', () => onToolChange('select'));
       } else if (activeToolRef.current === 'callout') {
         addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, nextStepNumber(canvas)));
       }
