@@ -1169,10 +1169,67 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         const scale = annotationScale();
         const color = activeColorRef.current;
         if (tool === 'text') {
+          // ADR-0008: dismissal interception. Fabric only auto-exits the old
+          // editing text when a NEW IText calls enterEditing() — see
+          // node_modules/fabric/dist/index.mjs (enterEditingImpl, ~16878).
+          // So a click outside an editing text reaches us here BEFORE Fabric
+          // has exited it; if we naively create, we spawn a redundant text
+          // box and only THEN does Fabric exit the old one. Catch the
+          // dismissal: if any text is currently in editing mode, exit it
+          // and consume the click. The editing:exited listener (registered
+          // when that text was created) handles the tool switch to Select.
+          // We deliberately do NOT forward the click to Select-tool
+          // semantics — the user's intent is "finish typing", not "select
+          // whatever was beneath my click".
+          //
+          // Why iterate canvas.getObjects() instead of calling
+          // canvas.getActiveObject(): addFinalObject above sets
+          // `evented = false` on any object created while a sticky drawing
+          // tool is active (Text included), and Fabric's
+          // IText.enterEditing() (node_modules/fabric/dist/index.mjs:16859)
+          // does NOT call setActiveObject. So the freshly-created editing
+          // text is NOT the canvas's active object — getActiveObject()
+          // returns null or an unrelated object the user happened to
+          // click. Iterate explicitly to find it. Fabric's
+          // textEditingManager guarantees at most one IText is in editing
+          // state at any time, so the .find is the right shape.
+          //
+          // Why containsPoint instead of event.target identity: Fabric
+          // does NOT report non-evented objects as mouse:up event targets,
+          // so `event.target === editingText` is unreliable here. A
+          // bounding-box hit-test against the scene pointer is the
+          // correct way to ask "did the click land inside the text?". If
+          // it did, let IText's hidden textarea handle cursor positioning.
+          const editingText = canvas.getObjects().find(
+            (obj) => (obj as TaggedObject).data?.kind === 'text' && (obj as Textbox).isEditing
+          ) as Textbox | undefined;
+          if (editingText) {
+            if (editingText.containsPoint(pointer)) {
+              return;
+            }
+            editingText.exitEditing();
+            return;
+          }
+
           const text = makeText(color, scale, pointer.x, pointer.y);
           addFinalObject(text);
           text.enterEditing();
           text.selectAll();
+          // ADR-0008: when editing exits via Esc, Tab, or any non-click path
+          // (programmatic blur), snap back to Select so the gesture that
+          // finished typing doesn't leave Text armed. The click-outside
+          // dismissal path is handled above at mouse:up; this listener
+          // covers the remaining exit routes. `once` self-detaches so
+          // re-editing the same Textbox later doesn't reapply the snap.
+          // The synchronous ref write matches the precedent at the
+          // click-on-existing-annotation escape in handleMouseDown (line
+          // ~928) — defensive against any event ordering where a follow-up
+          // mouse handler reads activeToolRef before React's setState
+          // flush.
+          text.once('editing:exited', () => {
+            activeToolRef.current = 'select';
+            onToolChange('select');
+          });
         } else if (tool === 'callout') {
           addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, nextStepNumber(canvas)));
         }
