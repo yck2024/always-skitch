@@ -18,6 +18,7 @@ import {
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
+import { extractDominantColor } from './utils/extractDominantColor';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
 // globally in src/components/CanvasEditor.tsx. We rely on that here. If a user
@@ -147,9 +148,18 @@ interface CanvasEditorProps {
   // NOT via this prop changing — that way we don't re-fire recolor on every
   // unrelated render.
   activeColor: string;
-  // Color of the empty space between Images on the Canvas. NOT undoable — it
+  // Effective Canvas color for empty space between Images. NOT undoable — it
   // is a session setting, not an edit (see Canvas color glossary entry).
-  canvasColor: FreeformCanvasColor;
+  //
+  // Type widens from FreeformCanvasColor to also accept a hex string so the
+  // parent can pass a derived Match-mode color (ADR-0008) without this
+  // component needing to know about Match state. Three known names
+  // ('white' | 'black' | 'transparent') retain their existing semantics
+  // (solid fill, solid fill, checker-pattern-via-CSS); anything else is
+  // treated as a literal CSS color and painted directly. The Match-mode
+  // state machine — auto-engage, disengage, cached derived color — lives in
+  // App.tsx; here we just paint what we're told.
+  canvasColor: FreeformCanvasColor | string;
   onHasImagesChange: (hasImages: boolean) => void;
   onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
@@ -174,6 +184,21 @@ interface CanvasEditorProps {
   // Receives `null` when the menu should close (e.g., right-click in a
   // drawing tool or on empty Canvas).
   onContextMenu?: (position: { x: number; y: number } | null) => void;
+  // ADR-0008 (Canvas color Match mode): fired once per successful Image
+  // paste, AFTER the FabricImage has decoded. Carries the saturation-weighted,
+  // lightness-clamped dominant color of the pasted Image, or `null` when the
+  // image yields no usable color (all-white, all-gray, etc.), plus `wasEmpty`
+  // — true iff the canvas held no Images at the moment this paste's queued
+  // mutation began (i.e., before canvas.add for this paste). The editor owns
+  // this signal so the auto-engage gate in App.tsx is race-free across rapid
+  // double-pastes: queued mutations are serialized, so paste-1 has already
+  // added its Image by the time paste-2's mutation evaluates wasEmpty.
+  // Reading React state in App.tsx instead would let two near-simultaneous
+  // pastes both observe `hasImages === false` and both auto-engage. The
+  // editor has no opinion on what the parent does with these — auto-engage
+  // logic, caching, and the active/inactive state of Match mode all live in
+  // App.tsx so this component stays mode-agnostic.
+  onImagePastedDominantColor?: (color: string | null, wasEmpty: boolean) => void;
 }
 
 export interface FreeformCanvasEditorHandle {
@@ -507,6 +532,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onSelectionChange,
       onHasContentChange,
       onContextMenu,
+      onImagePastedDominantColor,
     },
     ref,
   ) {
@@ -1274,6 +1300,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // there to make "transparent" visually unambiguous. NOT pushed to history:
     // this is a session setting, not an edit (see the Canvas color glossary
     // entry).
+    //
+    // ADR-0008: a hex string (anything not 'white' / 'black' / 'transparent')
+    // is treated as a literal CSS color and painted directly. That's the
+    // Match-mode case — the parent computes the effective color from the
+    // derived-color cache and passes it through here.
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -1281,11 +1312,16 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         canvas.backgroundColor = '#ffffff';
       } else if (canvasColor === 'black') {
         canvas.backgroundColor = '#000000';
-      } else {
+      } else if (canvasColor === 'transparent') {
         // Fabric treats falsy backgroundColor as "no fill" — the underlying
         // DOM canvas remains transparent, letting `.canvas-wrap`'s background
         // (the checker pattern, applied via a data attribute) show through.
         canvas.backgroundColor = '';
+      } else {
+        // Literal color (Match-derived hex). Paint it straight into Fabric's
+        // backgroundColor — no transparent / checker semantics, just a solid
+        // fill that follows the dominant color of the latest paste.
+        canvas.backgroundColor = canvasColor;
       }
       canvas.requestRenderAll();
     }, [canvasColor]);
@@ -1421,14 +1457,18 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
 
       // Canvas color → export background. Transparent => '' (Fabric skips
       // the fill, alpha preserved). Capturing canvasColor through a ref so a
-      // mid-session change after canvas init is reflected.
+      // mid-session change after canvas init is reflected. A hex string from
+      // Match mode (ADR-0008) is painted as a literal solid fill — exported
+      // PNG matches what the user sees on screen.
       const exportColor = canvasColorRef.current;
       if (exportColor === 'white') {
         canvas.backgroundColor = '#ffffff';
       } else if (exportColor === 'black') {
         canvas.backgroundColor = '#000000';
-      } else {
+      } else if (exportColor === 'transparent') {
         canvas.backgroundColor = '';
+      } else {
+        canvas.backgroundColor = exportColor;
       }
 
       // Bbox + padding in scene coords. EXPORT_PADDING is in NATURAL output
@@ -1482,6 +1522,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           return queueMutation(async () => {
             const canvas = canvasRef.current;
             if (!canvas) return;
+            // ADR-0008 race fix: capture "was the canvas empty before this
+            // paste" synchronously, at the moment this paste's queued mutation
+            // starts running and BEFORE canvas.add. Mutations are serialized
+            // by queueMutation, so a previous paste in the same batch has
+            // already landed its Image on the canvas by the time we read this.
+            // This is the source of truth the auto-engage gate in App.tsx
+            // depends on — reading React `hasImages` instead would let two
+            // rapid pastes both observe `false` and both auto-engage.
+            const wasEmpty = imageObjects(canvas).length === 0;
             let image: FabricImage;
             try {
               image = await FabricImage.fromURL(dataUrl);
@@ -1537,6 +1586,22 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             pushHasContentChange(canvas);
             fitCanvasToViewport();
             saveHistorySnapshot();
+            // ADR-0008: extract a softened dominant color and hand it up to
+            // App.tsx, which owns the Match-mode state machine. We do this
+            // AFTER history snapshot so a successful paste is recorded even
+            // if extraction throws — the cached derived color is a session
+            // setting, not part of canvas history. Extraction failure is
+            // signaled with `null` so the parent can decide what "silent
+            // fallback" means in its current state (per ADR-0008: White on
+            // first paste, previous derived color on subsequent pastes).
+            // `wasEmpty` (captured pre-add at the top of this mutation) is the
+            // race-free source of truth for App.tsx's auto-engage gate.
+            if (onImagePastedDominantColor) {
+              const element = image.getElement();
+              const color =
+                element instanceof HTMLImageElement ? extractDominantColor(element) : null;
+              onImagePastedDominantColor(color, wasEmpty);
+            }
           });
         },
         undo: () => {
@@ -1678,7 +1743,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       // (useCallback), so this list is effectively constant — but listing them
       // keeps the React lint rule happy if/when that changes.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [onHasImagesChange, onHistoryChange, onToast, onToolChange],
+      [onHasImagesChange, onHistoryChange, onToast, onToolChange, onImagePastedDominantColor],
     );
 
     return (
@@ -1694,7 +1759,17 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         ) : null}
         <div
           className={hasImages ? 'canvas-wrap visible' : 'canvas-wrap'}
+          // For the three named modes the data-canvas-color CSS selectors in
+          // styles.css paint the wrap (solid for white/black, checker for
+          // transparent). A hex string from Match mode (ADR-0008) doesn't
+          // match any selector, so we paint the wrap inline so the canvas's
+          // visible edges blend with Fabric's interior fill.
           data-canvas-color={canvasColor}
+          style={
+            canvasColor === 'white' || canvasColor === 'black' || canvasColor === 'transparent'
+              ? undefined
+              : { background: canvasColor }
+          }
         >
           <canvas ref={canvasElRef} />
         </div>
