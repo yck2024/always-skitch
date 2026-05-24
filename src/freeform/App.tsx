@@ -491,6 +491,22 @@ export default function FreeformApp() {
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
+        {/* ADR-0007 Clear Canvas. Wipes every Image and Annotation in a single
+            undoable step. Gated on `hasContent` (same flag driving the export
+            buttons) so the button only enables when there's something to
+            clear. The window.confirm wording is part of the spec — do not
+            edit without updating the issue and ADR. No keyboard shortcut. */}
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm('Clear the Canvas? All Images and Annotations will be removed. Use Undo to restore.')) {
+              editorRef.current?.clearCanvas();
+            }
+          }}
+          disabled={!hasContent}
+        >
+          Clear Canvas
+        </button>
         {/* Shortcuts mirrors Skitch's button. Always enabled — it's a reference
             overlay, useful even before any content is on the canvas. The `?`
             key opens the same modal. */}
