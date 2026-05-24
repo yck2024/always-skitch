@@ -1182,19 +1182,32 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           // semantics — the user's intent is "finish typing", not "select
           // whatever was beneath my click".
           //
-          // The event.target check exists so clicks inside the editing text
-          // itself (cursor repositioning within the text body) are NOT
-          // treated as dismissal — let Fabric/IText handle them. The
-          // local CanvasPointerEvent type only declares `e`; Fabric's
-          // actual mouse:up event also carries `target`. Narrow cast here
-          // to read it without changing the broader handler signature.
-          const active = canvas.getActiveObject() as (TaggedObject & Textbox) | null;
-          if (active?.data?.kind === 'text' && active.isEditing) {
-            const eventTarget = (event as { target?: FabricObject }).target;
-            if (eventTarget === active) {
+          // Why iterate canvas.getObjects() instead of calling
+          // canvas.getActiveObject(): addFinalObject above sets
+          // `evented = false` on any object created while a sticky drawing
+          // tool is active (Text included), and Fabric's
+          // IText.enterEditing() (node_modules/fabric/dist/index.mjs:16859)
+          // does NOT call setActiveObject. So the freshly-created editing
+          // text is NOT the canvas's active object — getActiveObject()
+          // returns null or an unrelated object the user happened to
+          // click. Iterate explicitly to find it. Fabric's
+          // textEditingManager guarantees at most one IText is in editing
+          // state at any time, so the .find is the right shape.
+          //
+          // Why containsPoint instead of event.target identity: Fabric
+          // does NOT report non-evented objects as mouse:up event targets,
+          // so `event.target === editingText` is unreliable here. A
+          // bounding-box hit-test against the scene pointer is the
+          // correct way to ask "did the click land inside the text?". If
+          // it did, let IText's hidden textarea handle cursor positioning.
+          const editingText = canvas.getObjects().find(
+            (obj) => (obj as TaggedObject).data?.kind === 'text' && (obj as Textbox).isEditing
+          ) as Textbox | undefined;
+          if (editingText) {
+            if (editingText.containsPoint(pointer)) {
               return;
             }
-            active.exitEditing();
+            editingText.exitEditing();
             return;
           }
 
