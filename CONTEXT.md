@@ -7,8 +7,12 @@ A static, browser-only image annotation app for marking up screenshots with bold
 ## Language
 
 **Annotation**:
-A shape drawn by the user on top of the background image (arrow, rectangle, text, callout, blur).
+A shape drawn by the user on top of the background image (arrow, rectangle, text, Step, blur).
 _Avoid_: shape, object, marker
+
+**Step**:
+A numbered circular **Annotation** used to walk a viewer through the screenshot (1, 2, 3, …). Each **Step**'s number is a stable ID assigned at creation — deleting or undoing intermediate **Steps** never renumbers the others. The next **Step**'s number is `max(existing numbers) + 1`, falling back to 1 when no **Steps** exist — so clearing annotations, undoing back to empty, or pasting a new **Background** all restart at 1.
+_Avoid_: callout (code/internal name only), marker, label, badge
 
 **Background**:
 The pasted screenshot the user is annotating.
@@ -23,7 +27,7 @@ The fixed six-color set offered in the color picker popover.
 _Avoid_: swatches, color list, presets
 
 **Halo**:
-The white stroke around text letters and around callout circles, plus the white label inside callout circles.
+The white stroke around text letters and around **Step** circles, plus the white number label inside each **Step**.
 _Avoid_: outline, border, stroke
 
 **Recolor**:

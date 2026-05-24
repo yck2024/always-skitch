@@ -524,6 +524,18 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
   return group;
 }
 
+function nextStepNumber(canvas: Canvas) {
+  let max = 0;
+  for (const object of canvas.getObjects()) {
+    if ((object as TaggedObject).data?.kind !== 'callout') continue;
+    const children = (object as Group & { _objects?: FabricObject[] })._objects ?? [];
+    const text = children.find((child): child is Text => child instanceof Text);
+    const parsed = text ? parseInt(text.text ?? '', 10) : NaN;
+    if (Number.isFinite(parsed) && parsed > max) max = parsed;
+  }
+  return max + 1;
+}
+
 export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, CanvasEditorProps>(
   function FreeformCanvasEditor(
     {
@@ -607,10 +619,6 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     const hasContentRef = useRef(false);
     // Active drag-tool state (arrow/rectangle). null between drags.
     const drawingRef = useRef<DrawingState | null>(null);
-    // Step-callout counter. Starts at 1 on a fresh Canvas; increments across
-    // the whole Canvas (NOT per-Image, matching the spec). We deliberately do
-    // NOT reset on paste — Freeform's Canvas spans multiple Images.
-    const calloutNumberRef = useRef(1);
 
     // Auto-fit: scale the whole canvas so the bounding box of all visible
     // Freeform content (Images + Annotations) fits the viewport (the
@@ -1166,7 +1174,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           text.enterEditing();
           text.selectAll();
         } else if (tool === 'callout') {
-          addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, calloutNumberRef.current++));
+          addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, nextStepNumber(canvas)));
         }
       };
 
