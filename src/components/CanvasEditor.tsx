@@ -170,6 +170,18 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
   return group;
 }
 
+function nextStepNumber(canvas: Canvas) {
+  let max = 0;
+  for (const object of canvas.getObjects()) {
+    if ((object as FabricObject & { data?: { kind?: string } }).data?.kind !== 'callout') continue;
+    const children = (object as Group).getObjects();
+    const text = children.find((child): child is Text => child instanceof Text);
+    const parsed = text ? parseInt(text.text ?? '', 10) : NaN;
+    if (Number.isFinite(parsed) && parsed > max) max = parsed;
+  }
+  return max + 1;
+}
+
 function createPixelatedCrop(image: HTMLImageElement, x: number, y: number, width: number, height: number) {
   const safeWidth = Math.max(1, Math.round(width));
   const safeHeight = Math.max(1, Math.round(height));
@@ -203,7 +215,6 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
   const restoringRef = useRef(false);
-  const calloutNumberRef = useRef(1);
   const displayScaleRef = useRef(1);
 
   const fitCanvasToViewport = () => {
@@ -443,7 +454,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         text.enterEditing();
         text.selectAll();
       } else if (activeToolRef.current === 'callout') {
-        addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, calloutNumberRef.current++));
+        addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, nextStepNumber(canvas)));
       }
     };
 
@@ -477,7 +488,6 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       if (cancelled) return;
       const element = image.getElement() as HTMLImageElement;
       backgroundElementRef.current = element;
-      calloutNumberRef.current = 1;
       currentCanvas.clear();
       currentCanvas.add(makeBackground(image));
       currentCanvas.sendObjectToBack(image);

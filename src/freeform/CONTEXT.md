@@ -13,8 +13,12 @@ A pasted screenshot on the **Canvas**. Draggable, resizable, deletable. A **Canv
 _Avoid_: photo, picture, tile, card, panel, background
 
 **Annotation**:
-A shape (arrow, rectangle, text, callout, blur) on the **Canvas**. Lives in canvas coordinates, never bound to an **Image**.
+A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Lives in canvas coordinates, never bound to an **Image**.
 _Avoid_: shape, marker
+
+**Step**:
+A numbered circular **Annotation** used to walk a viewer through the **Canvas** (1, 2, 3, …). Numbers are **Canvas**-wide, not per-**Image** — placing the next **Step** continues the sequence across all **Images**. Each number is a stable ID assigned at creation; deleting or undoing intermediate **Steps** never renumbers the others. The next **Step**'s number is `max(existing numbers) + 1`, falling back to 1 when the **Canvas** has none — so **Clear Canvas** or undoing back to empty automatically restarts at 1. Pasting an additional **Image** does NOT reset the sequence (consistent with **Canvas**-wide numbering).
+_Avoid_: callout (code/internal name only), marker, label, badge
 
 **Active color**:
 The pen color new **Annotations** are drawn in. Unlike Skitch, the **Active color** persists across pastes — pasting an **Image** never resets it.
