@@ -478,6 +478,28 @@ button.primary {
   background-position: 0 0, 0 4px, 4px -4px, -4px 0;
 }
 
+/* ADR-0008 / #20: Match swatch. Static "color wheel" glyph — a conic
+   gradient cycling the rainbow over a light disc — so the affordance reads
+   as "auto / derive from image" rather than "another solid color". We
+   deliberately do NOT live-preview the current derivedColor here: per
+   ADR-0008 the swatch is a mode toggle, and a per-paste-flickering glyph
+   would make the mode boundary feel unstable. The disabled state inherits
+   `cursor: not-allowed; opacity: 0.45` from the global `button:disabled`
+   rule — no extra style needed. */
+.canvas-color-swatch.canvas-color-match {
+  background:
+    conic-gradient(
+      from 0deg,
+      #ff5b5b,
+      #ffb15b,
+      #f1e453,
+      #6ce98a,
+      #5bc1ff,
+      #8a6cf2,
+      #ff5b5b
+    );
+}
+
 .canvas-color-swatch.active {
   border-color: #34383e;
   box-shadow: 0 0 0 2px rgba(52, 56, 62, 0.28);

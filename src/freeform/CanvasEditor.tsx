@@ -129,7 +129,11 @@ type DrawingState =
 // Canvas color (the empty-space color between Images). 'transparent' means
 // "let the wrapping element's background show through" — see ADR-style note
 // in App.tsx for why we picked a checker-pattern visual for transparent.
-export type FreeformCanvasColor = 'white' | 'black' | 'transparent';
+// 'match' is the ADR-0008 derive-from-paste mode (slice 2 / #20). The editor
+// resolves it to the literal RGB carried in the sibling `derivedColor` prop
+// at paint time — App.tsx owns the cache and the state machine; the editor
+// just paints what it's told.
+export type FreeformCanvasColor = 'white' | 'black' | 'transparent' | 'match';
 
 interface CanvasEditorProps {
   // True when the parent thinks at least one Image is on the canvas. Drives
@@ -148,18 +152,20 @@ interface CanvasEditorProps {
   // NOT via this prop changing — that way we don't re-fire recolor on every
   // unrelated render.
   activeColor: string;
-  // Effective Canvas color for empty space between Images. NOT undoable — it
-  // is a session setting, not an edit (see Canvas color glossary entry).
-  //
-  // Type widens from FreeformCanvasColor to also accept a hex string so the
-  // parent can pass a derived Match-mode color (ADR-0008) without this
-  // component needing to know about Match state. Three known names
-  // ('white' | 'black' | 'transparent') retain their existing semantics
-  // (solid fill, solid fill, checker-pattern-via-CSS); anything else is
-  // treated as a literal CSS color and painted directly. The Match-mode
-  // state machine — auto-engage, disengage, cached derived color — lives in
+  // Canvas color mode for empty space between Images. NOT undoable — it is
+  // a session setting, not an edit (see Canvas color glossary entry). One of
+  // four named modes: 'white' / 'black' / 'transparent' (solid fill, solid
+  // fill, checker-pattern-via-CSS); 'match' resolves to the literal RGB in
+  // the sibling `derivedColor` prop (ADR-0008 / #20). The Match-mode state
+  // machine — auto-engage, disengage, cached derived color — lives in
   // App.tsx; here we just paint what we're told.
-  canvasColor: FreeformCanvasColor | string;
+  canvasColor: FreeformCanvasColor;
+  // ADR-0008 / #20. The literal RGB hex App.tsx wants the editor to paint
+  // when `canvasColor === 'match'`. `null` means no successful extraction
+  // is cached yet — the editor falls back to White for the match branch in
+  // that case (silent fallback per ADR-0008). Unused while `canvasColor`
+  // is W/B/T.
+  derivedColor: string | null;
   onHasImagesChange: (hasImages: boolean) => void;
   onHistoryChange: (canUndo: boolean, canRedo: boolean) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
@@ -525,6 +531,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       activeTool,
       activeColor,
       canvasColor,
+      derivedColor,
       onHasImagesChange,
       onHistoryChange,
       onToast,
@@ -589,6 +596,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // could read it through closure capture in the handle deps, but the ref
     // pattern is already established here and keeps the handle stable.
     const canvasColorRef = useRef(canvasColor);
+    // Same ref pattern for derivedColor — exportDataUrl needs to read it
+    // when canvasColor === 'match' to paint the literal RGB into the PNG's
+    // background. App.tsx is the source of truth for the cache; this is
+    // just a mirror that survives the imperative-handle's stable identity.
+    const derivedColorRef = useRef(derivedColor);
     // Track the last-pushed hasContent so we don't spam the parent on every
     // mutation when the boolean hasn't changed. Reset on canvas dispose via
     // the cleanup branch of the canvas-setup effect.
@@ -822,6 +834,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     useEffect(() => {
       canvasColorRef.current = canvasColor;
     }, [canvasColor]);
+
+    useEffect(() => {
+      derivedColorRef.current = derivedColor;
+    }, [derivedColor]);
 
     useEffect(() => {
       if (!canvasElRef.current) return;
@@ -1301,10 +1317,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // this is a session setting, not an edit (see the Canvas color glossary
     // entry).
     //
-    // ADR-0008: a hex string (anything not 'white' / 'black' / 'transparent')
-    // is treated as a literal CSS color and painted directly. That's the
-    // Match-mode case — the parent computes the effective color from the
-    // derived-color cache and passes it through here.
+    // ADR-0008 'match': resolve to the literal RGB carried in derivedColor.
+    // If derivedColor is null (no successful extraction cached yet) we paint
+    // White as the silent fallback — App.tsx normally disables the Match
+    // swatch in that state, but the auto-engage path can briefly arrive here
+    // with a stale null if a first-paste extraction fails. Painting white
+    // matches the ADR-0008 "silent fallback to White on first paste failure".
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -1318,13 +1336,13 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // (the checker pattern, applied via a data attribute) show through.
         canvas.backgroundColor = '';
       } else {
-        // Literal color (Match-derived hex). Paint it straight into Fabric's
-        // backgroundColor — no transparent / checker semantics, just a solid
+        // 'match': paint the cached derived RGB straight into Fabric's
+        // backgroundColor. No transparent / checker semantics — just a solid
         // fill that follows the dominant color of the latest paste.
-        canvas.backgroundColor = canvasColor;
+        canvas.backgroundColor = derivedColor ?? '#ffffff';
       }
       canvas.requestRenderAll();
-    }, [canvasColor]);
+    }, [canvasColor, derivedColor]);
 
     const restoreHistory = async (state: string) => {
       const canvas = canvasRef.current;
@@ -1457,9 +1475,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
 
       // Canvas color → export background. Transparent => '' (Fabric skips
       // the fill, alpha preserved). Capturing canvasColor through a ref so a
-      // mid-session change after canvas init is reflected. A hex string from
-      // Match mode (ADR-0008) is painted as a literal solid fill — exported
-      // PNG matches what the user sees on screen.
+      // mid-session change after canvas init is reflected. 'match' (ADR-0008)
+      // resolves to the cached derived RGB via derivedColorRef so the
+      // exported PNG matches what the user sees on screen; null derivedColor
+      // falls back to White, mirroring the live-render branch above.
       const exportColor = canvasColorRef.current;
       if (exportColor === 'white') {
         canvas.backgroundColor = '#ffffff';
@@ -1468,7 +1487,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       } else if (exportColor === 'transparent') {
         canvas.backgroundColor = '';
       } else {
-        canvas.backgroundColor = exportColor;
+        canvas.backgroundColor = derivedColorRef.current ?? '#ffffff';
       }
 
       // Bbox + padding in scene coords. EXPORT_PADDING is in NATURAL output
@@ -1759,16 +1778,19 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         ) : null}
         <div
           className={hasImages ? 'canvas-wrap visible' : 'canvas-wrap'}
-          // For the three named modes the data-canvas-color CSS selectors in
-          // styles.css paint the wrap (solid for white/black, checker for
-          // transparent). A hex string from Match mode (ADR-0008) doesn't
-          // match any selector, so we paint the wrap inline so the canvas's
-          // visible edges blend with Fabric's interior fill.
+          // For the three solid/checker modes the data-canvas-color CSS
+          // selectors in styles.css paint the wrap (solid for white/black,
+          // checker for transparent). 'match' (ADR-0008 / #20) has no
+          // matching CSS rule — the derived RGB is per-session — so we paint
+          // the wrap inline with the resolved color so the canvas's visible
+          // edges blend with Fabric's interior fill. Null derivedColor under
+          // 'match' falls back to White (silent fallback), matching the
+          // Fabric backgroundColor branch above.
           data-canvas-color={canvasColor}
           style={
-            canvasColor === 'white' || canvasColor === 'black' || canvasColor === 'transparent'
-              ? undefined
-              : { background: canvasColor }
+            canvasColor === 'match'
+              ? { background: derivedColor ?? '#ffffff' }
+              : undefined
           }
         >
           <canvas ref={canvasElRef} />
