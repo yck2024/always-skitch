@@ -1,4 +1,4 @@
-# 0003 Text tool is one-shot — auto-switches to Select after editing exits
+# 0008 Text tool is one-shot — auto-switches to Select after editing exits
 
 In both Skitch and Freeform, after the user exits edit mode on a freshly created text box, the active tool automatically switches to Select. The user must re-pick Text to create another text box. Every other drawing tool — Arrow, Rectangle, Callout, Blur — remains sticky and can be used to create multiple objects in succession.
 

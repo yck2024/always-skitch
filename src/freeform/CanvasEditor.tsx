@@ -1173,12 +1173,19 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           addFinalObject(text);
           text.enterEditing();
           text.selectAll();
-          // System-wide ADR-0003: Text is the one-shot drawing tool. When
+          // ADR-0008: Text is the one-shot drawing tool. When
           // edit mode exits (click outside, Esc, Tab, programmatic blur),
           // snap back to Select so the click that finished typing doesn't
           // silently spawn another text box. `once` self-detaches so
-          // re-editing this same Textbox later doesn't reapply the snap.
-          text.once('editing:exited', () => onToolChange('select'));
+          // re-editing this same Textbox later doesn't reapply the snap. We
+          // sync `activeToolRef.current` manually because the React setState
+          // path is too slow — the mouse:down that follows the exit click
+          // runs in the same Fabric event cycle and reads the ref
+          // synchronously (same pattern as line 928 above).
+          text.once('editing:exited', () => {
+            activeToolRef.current = 'select';
+            onToolChange('select');
+          });
         } else if (tool === 'callout') {
           addFinalObject(makeCallout(color, scale, pointer.x, pointer.y, nextStepNumber(canvas)));
         }
