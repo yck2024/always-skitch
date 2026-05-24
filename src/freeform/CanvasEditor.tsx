@@ -1169,19 +1169,50 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         const scale = annotationScale();
         const color = activeColorRef.current;
         if (tool === 'text') {
+          // ADR-0008: dismissal interception. Fabric only auto-exits the old
+          // editing text when a NEW IText calls enterEditing() — see
+          // node_modules/fabric/dist/index.mjs (enterEditingImpl, ~16878).
+          // So a click outside an editing text reaches us here BEFORE Fabric
+          // has exited it; if we naively create, we spawn a redundant text
+          // box and only THEN does Fabric exit the old one. Catch the
+          // dismissal: if any text is currently in editing mode, exit it
+          // and consume the click. The editing:exited listener (registered
+          // when that text was created) handles the tool switch to Select.
+          // We deliberately do NOT forward the click to Select-tool
+          // semantics — the user's intent is "finish typing", not "select
+          // whatever was beneath my click".
+          //
+          // The event.target check exists so clicks inside the editing text
+          // itself (cursor repositioning within the text body) are NOT
+          // treated as dismissal — let Fabric/IText handle them. The
+          // local CanvasPointerEvent type only declares `e`; Fabric's
+          // actual mouse:up event also carries `target`. Narrow cast here
+          // to read it without changing the broader handler signature.
+          const active = canvas.getActiveObject() as (TaggedObject & Textbox) | null;
+          if (active?.data?.kind === 'text' && active.isEditing) {
+            const eventTarget = (event as { target?: FabricObject }).target;
+            if (eventTarget === active) {
+              return;
+            }
+            active.exitEditing();
+            return;
+          }
+
           const text = makeText(color, scale, pointer.x, pointer.y);
           addFinalObject(text);
           text.enterEditing();
           text.selectAll();
-          // ADR-0008: Text is the one-shot drawing tool. When
-          // edit mode exits (click outside, Esc, Tab, programmatic blur),
-          // snap back to Select so the click that finished typing doesn't
-          // silently spawn another text box. `once` self-detaches so
-          // re-editing this same Textbox later doesn't reapply the snap. We
-          // sync `activeToolRef.current` manually because the React setState
-          // path is too slow — the mouse:down that follows the exit click
-          // runs in the same Fabric event cycle and reads the ref
-          // synchronously (same pattern as line 928 above).
+          // ADR-0008: when editing exits via Esc, Tab, or any non-click path
+          // (programmatic blur), snap back to Select so the gesture that
+          // finished typing doesn't leave Text armed. The click-outside
+          // dismissal path is handled above at mouse:up; this listener
+          // covers the remaining exit routes. `once` self-detaches so
+          // re-editing the same Textbox later doesn't reapply the snap.
+          // The synchronous ref write matches the precedent at the
+          // click-on-existing-annotation escape in handleMouseDown (line
+          // ~928) — defensive against any event ordering where a follow-up
+          // mouse handler reads activeToolRef before React's setState
+          // flush.
           text.once('editing:exited', () => {
             activeToolRef.current = 'select';
             onToolChange('select');
