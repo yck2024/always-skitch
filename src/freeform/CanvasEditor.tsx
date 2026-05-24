@@ -182,6 +182,13 @@ interface CanvasEditorProps {
   // `onHasImagesChange` because a stray annotation with no Image still counts
   // as exportable content per issue #10 acceptance criteria.
   onHasContentChange?: (hasContent: boolean) => void;
+  // ADR-0010: parallel signal to `onHasContentChange` but scoped to the
+  // annotation layer only. Drives the Clear annotations button's enabled
+  // state — `hasContent` alone isn't sufficient because an Image with zero
+  // Annotations still makes `hasContent` true, and Clear annotations should
+  // be disabled in that case. Fires when the annotation count crosses the
+  // zero / non-zero boundary; idempotent on no-change.
+  onHasAnnotationsChange?: (hasAnnotations: boolean) => void;
   // ADR-0006: open the right-click context menu at the given viewport
   // coordinates (relative to the page, not the canvas). The editor handles
   // the right-click semantics itself (selecting the target Image if it isn't
@@ -237,6 +244,13 @@ export interface FreeformCanvasEditorHandle {
   // clearing everything. Settings (Active color, Canvas color, active tool)
   // are preserved.
   clearCanvas: () => void;
+  // ADR-0010: wipe every Annotation from the Canvas in a single undoable
+  // step. Sibling of `clearCanvas` but scoped to the annotation layer —
+  // Images and settings (Active color, Canvas color, active tool) are
+  // preserved. Mirrors Skitch's `clearAnnotations` semantically while keeping
+  // the implementation parallel-but-separate from `clearCanvas` (ADR-0010
+  // explicitly defers any shared-util refactor).
+  clearAnnotations: () => void;
 }
 
 // Every canvas object Freeform creates gets a `data.kind` tag so future tooling
@@ -550,6 +564,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       onToolChange,
       onSelectionChange,
       onHasContentChange,
+      onHasAnnotationsChange,
       onContextMenu,
       onImagePastedDominantColor,
     },
@@ -599,6 +614,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // Same pattern for the content-change callback: the imperative handle and
     // history paths need to push hasContent updates without re-binding.
     const onHasContentChangeRef = useRef(onHasContentChange);
+    // ADR-0010 mirror of the annotation-count callback, paralleling
+    // `onHasContentChangeRef`. Same rationale: every mutation entry point
+    // pushes through the helper below, and the canvas-setup effect runs
+    // once — reading the latest callback via ref keeps the handle stable
+    // and avoids re-binding event listeners on every prop change.
+    const onHasAnnotationsChangeRef = useRef(onHasAnnotationsChange);
     // Context-menu callback, mirrored for the same reason: the `contextmenu`
     // handler bound during canvas setup needs to fire the latest callback
     // identity without re-binding.
@@ -617,6 +638,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // mutation when the boolean hasn't changed. Reset on canvas dispose via
     // the cleanup branch of the canvas-setup effect.
     const hasContentRef = useRef(false);
+    // ADR-0010 parallel: track last-pushed hasAnnotations so the parent only
+    // hears about the zero/non-zero boundary crossings. Same idempotent
+    // push pattern as `hasContentRef` — kept as its own ref because content
+    // and annotations can change independently (deleting the last Annotation
+    // while Images remain flips hasAnnotations but not hasContent).
+    const hasAnnotationsRef = useRef(false);
     // Active drag-tool state (arrow/rectangle). null between drags.
     const drawingRef = useRef<DrawingState | null>(null);
 
@@ -707,6 +734,18 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       if (next === hasContentRef.current) return;
       hasContentRef.current = next;
       onHasContentChangeRef.current?.(next);
+    };
+
+    // ADR-0010: parallel push for the annotation-only count. Same idempotent
+    // shape as `pushHasContentChange`, called at every mutation entry point
+    // alongside it. The parent uses the flag for the Clear annotations
+    // button's disabled state — `hasContent` alone would also enable the
+    // button when only Images exist, which would be a no-op confusion.
+    const pushHasAnnotationsChange = (canvas: Canvas) => {
+      const next = annotationObjects(canvas).length > 0;
+      if (next === hasAnnotationsRef.current) return;
+      hasAnnotationsRef.current = next;
+      onHasAnnotationsChangeRef.current?.(next);
     };
 
     // ADR-0006 layer reorder applied to the current active selection.
@@ -836,6 +875,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     }, [onHasContentChange]);
 
     useEffect(() => {
+      onHasAnnotationsChangeRef.current = onHasAnnotationsChange;
+    }, [onHasAnnotationsChange]);
+
+    useEffect(() => {
       onContextMenuRef.current = onContextMenu;
     }, [onContextMenu]);
 
@@ -898,6 +941,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // change hasContent (still true), but the first thing on a fresh
         // canvas does. pushHasContentChange is a no-op on no-change.
         pushHasContentChange(canvas);
+        // ADR-0010: finalizing a drawn annotation always crosses the
+        // zero/non-zero boundary the first time it happens after a clear,
+        // so push the annotation flag here too. Idempotent on no-change.
+        pushHasAnnotationsChange(canvas);
         // Refit immediately after committing the annotation. A callout placed
         // near an Image corner uses centered origin and lands at a negative
         // left/top (e.g., left = clickX - size/2); without a refit here the
@@ -1400,6 +1447,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       restoringRef.current = false;
       onHasImagesChange(imageObjects(canvas).length > 0);
       pushHasContentChange(canvas);
+      pushHasAnnotationsChange(canvas);
       fitCanvasToViewport();
       onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
     };
@@ -1611,6 +1659,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // pastes where the shell is already sized.
             onHasImagesChange(true);
             pushHasContentChange(canvas);
+            pushHasAnnotationsChange(canvas);
             fitCanvasToViewport();
             saveHistorySnapshot();
             // ADR-0008: extract a softened dominant color and hand it up to
@@ -1721,6 +1770,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           canvas.requestRenderAll();
           onHasImagesChange(imageObjects(canvas).length > 0);
           pushHasContentChange(canvas);
+          pushHasAnnotationsChange(canvas);
           fitCanvasToViewport();
           // `object:modified` doesn't fire on remove, so we push the snapshot
           // here. (The Skitch path does the equivalent.)
@@ -1760,6 +1810,36 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             canvas.requestRenderAll();
             onHasImagesChange(false);
             pushHasContentChange(canvas);
+            pushHasAnnotationsChange(canvas);
+            fitCanvasToViewport();
+            saveHistorySnapshot();
+          });
+        },
+        // ADR-0010: wipe every Annotation while keeping Images and settings
+        // intact. Mirrors `clearCanvas` in shape (queued mutation, single
+        // history snapshot, idempotent has-change pushes) but scoped to the
+        // annotation layer only via `annotationObjects(canvas)`. No
+        // `onHasImagesChange` call — by construction Images are untouched, so
+        // hasImages cannot change. `pushHasContentChange` may or may not
+        // cross the boundary depending on whether Images remain (Image-only
+        // canvas: hasContent stays true; annotation-only canvas: hasContent
+        // flips false); the helper handles both cases idempotently.
+        clearAnnotations: () => {
+          void queueMutation(async () => {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const targets = annotationObjects(canvas);
+            if (targets.length === 0) return;
+            targets.forEach((object) => canvas.remove(object));
+            canvas.discardActiveObject();
+            // Programmatic discardActiveObject doesn't always fire
+            // `selection:cleared`; notify the parent so the Delete button's
+            // disabled state reflects the now-empty selection. Mirrors
+            // deleteSelected / clearCanvas.
+            onSelectionChangeRef.current?.(false);
+            canvas.requestRenderAll();
+            pushHasContentChange(canvas);
+            pushHasAnnotationsChange(canvas);
             fitCanvasToViewport();
             saveHistorySnapshot();
           });

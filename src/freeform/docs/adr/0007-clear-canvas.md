@@ -27,3 +27,7 @@ Freeform exposes a **Clear Canvas** command via a toolbar button. It removes eve
 - This is the first user-visible Freeform operation whose verb name overlaps with a Skitch operation but whose semantics deliberately diverge. CONTEXT.md captures the distinction in the **Clear Canvas** glossary entry. Future Freeform commands that map to Skitch concepts should follow the same pattern: pick names that make the asymmetry explicit (so not just `Clear`) and document the divergence in CONTEXT.md.
 
 - No keyboard shortcut is published in the Shortcuts modal. If a shortcut is added later, both the modal and the CONTEXT.md entry will need updating in lockstep.
+
+## Update — partial supersession by ADR-0010
+
+The "Annotations-only Clear" alternative rejected above is partially superseded by [ADR-0010](../../../../.agents/config/adr/0010-freeform-clear-annotations.md). Freeform now exposes both **Clear Annotations** and **Clear Canvas** as siblings; the "group-select + Delete is enough" reasoning didn't anticipate the workflow of redoing all marks across multiple **Images** while keeping the **Images**. ADR-0007's Clear Canvas decision itself is unchanged.

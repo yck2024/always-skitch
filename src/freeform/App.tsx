@@ -121,6 +121,12 @@ export default function FreeformApp() {
   // also counts as content — though in normal flow Annotations require an
   // Image; this just keeps the gating expressive and forward-compatible.
   const [hasContent, setHasContent] = useState(false);
+  // ADR-0010: Whether the canvas has at least one Annotation. Drives the
+  // Clear annotations button's enabled state and gates the `C` keyboard
+  // shortcut. Distinct from `hasContent` — an Image-only canvas has
+  // `hasContent === true` but `hasAnnotations === false`, and the Clear
+  // annotations command should be disabled there.
+  const [hasAnnotations, setHasAnnotations] = useState(false);
   // Shortcuts modal visibility. Opened by the toolbar button or the `?` key.
   // Closed by clicking the backdrop, the close button, or pressing Esc.
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -363,6 +369,19 @@ export default function FreeformApp() {
           // ADR-0006: Send Image(s) to Back. Mirror of the above.
           event.preventDefault();
           editorRef.current?.sendSelectedImagesToBack();
+        } else if (key === 'c') {
+          // ADR-0010: Clear annotations. The keyboard form prompts a
+          // window.confirm (the toolbar button does not — same split as
+          // Skitch). Outer `!meta && !isEditingText` branch already
+          // rules out Cmd+C / Ctrl+C copy AND text-editing focus, so
+          // we don't need to re-check those here. Falls through silently
+          // when no annotations exist (mirrors Skitch's `hasImage` gate,
+          // gated on `hasAnnotations` here). Message text is the spec —
+          // verbatim match to Skitch.
+          event.preventDefault();
+          if (hasAnnotations && window.confirm('Clear all annotations? This cannot be reversed except via Undo.')) {
+            editorRef.current?.clearAnnotations();
+          }
         }
       }
     };
@@ -373,7 +392,7 @@ export default function FreeformApp() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts]);
+  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts, hasAnnotations]);
 
   return (
     <div className="app">
@@ -491,6 +510,21 @@ export default function FreeformApp() {
         <button type="button" onClick={() => editorRef.current?.deleteSelected()} disabled={!hasSelection}>
           Delete
         </button>
+        {/* ADR-0010 Clear annotations. Sibling of Clear Canvas — wipes every
+            Annotation but keeps Images and settings (Active color, Canvas
+            color, active tool). Gated on `hasAnnotations` (NOT `hasContent`)
+            because an Image-only canvas would otherwise enable a no-op
+            button. No confirm on click — the dialog only appears for the
+            `C` keyboard shortcut, matching Skitch's button-vs-keyboard
+            asymmetry. Label casing ("Clear annotations" lowercase 'a') is
+            verbatim to Skitch's so dual-route muscle memory transfers. */}
+        <button
+          type="button"
+          onClick={() => editorRef.current?.clearAnnotations()}
+          disabled={!hasAnnotations}
+        >
+          Clear annotations
+        </button>
         {/* ADR-0007 Clear Canvas. Wipes every Image and Annotation in a single
             undoable step. Gated on `hasContent` (same flag driving the export
             buttons) so the button only enables when there's something to
@@ -556,6 +590,7 @@ export default function FreeformApp() {
           onToolChange={setActiveTool}
           onSelectionChange={setHasSelection}
           onHasContentChange={setHasContent}
+          onHasAnnotationsChange={setHasAnnotations}
           onContextMenu={setContextMenu}
           onImagePastedDominantColor={handleImagePastedDominantColor}
         />
@@ -607,9 +642,9 @@ export default function FreeformApp() {
 }
 
 // Freeform-specific shortcut listing. Tools mirror Skitch (V/A/R/T/S/B) so
-// muscle memory transfers, but Actions diverge: Freeform has `[` / `]` for
-// Image layer order (ADR-0006) and no Clear-annotations (the multi-Image
-// model doesn't have a single-screenshot "reset" gesture).
+// muscle memory transfers. Actions overlap (`C` is shared since ADR-0010,
+// same semantic in both routes) and diverge (Freeform has `[` / `]` for
+// Image layer order — ADR-0006 — which Skitch lacks).
 const FREEFORM_TOOL_SHORTCUTS: ShortcutRow[] = [
   ['V', 'Select'],
   ['A', 'Arrow'],
@@ -622,6 +657,7 @@ const FREEFORM_TOOL_SHORTCUTS: ShortcutRow[] = [
 const FREEFORM_ACTION_SHORTCUTS: ShortcutRow[] = [
   [']', 'Bring selected Image(s) to front'],
   ['[', 'Send selected Image(s) to back'],
+  ['C', 'Clear annotations (confirms first)'],
   ['Esc', 'Switch to Select / close menus'],
   ['?', 'Open this shortcut list'],
 ];
