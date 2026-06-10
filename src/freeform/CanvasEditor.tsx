@@ -30,21 +30,24 @@ FabricObject.ownDefaults.originY = 'top';
 
 // Maximum display width for a newly pasted Image. We never touch the underlying
 // HTMLImageElement's pixels — only Fabric's `width`/`height` (which control
-// display size). Source pixels stay at naturalWidth/naturalHeight, so later
-// export at higher resolution remains an option.
+// display size). Source pixels stay at naturalWidth/naturalHeight, so export
+// can invert the display scale and preserve pasted screenshot resolution.
 const MAX_PASTE_WIDTH = 800;
 // Horizontal gap between adjacent pasted Images in the auto-row layout.
 const PASTE_GAP = 24;
-// Padding around the content bounding box in the exported PNG, in NATURAL
-// output pixels (since the export pipeline below renders at 1 scene unit = 1
-// output pixel). 20px matches the issue spec's "16-24px" range and gives a
-// breathing margin that's visible without dominating the image.
+// Padding around the content bounding box in scene coordinates. Export may
+// render at a higher multiplier than the on-screen scene to preserve pasted
+// Image pixels, so the final output-pixel padding scales with that multiplier.
+// 20 scene px matches the issue spec's "16-24px" range and gives a breathing
+// margin that's visible without dominating the image.
 const EXPORT_PADDING = 20;
 // Default filename for the Download action. Mirrors Skitch's
 // `EXPORT_FILE_NAME` but distinguishes the Freeform output so a user
 // downloading from both surfaces in the same session doesn't get filename
 // collisions in their Downloads folder.
 const EXPORT_FILE_NAME = 'mini-skitch-freeform.png';
+const FULL_SIZE_EXPORT_FILE_NAME = 'mini-skitch-freeform-full-size.png';
+type FreeformExportResolution = 'display' | 'full-size';
 // Annotation visual constants — these mirror Skitch's exactly so annotations
 // drawn in Freeform look identical to ones drawn in Skitch. Duplication is
 // intentional: extracting a shared module risks coupling the two editors
@@ -226,11 +229,16 @@ export interface FreeformCanvasEditorHandle {
   // single entry point.
   deleteSelected: () => void;
   // Copy a PNG of the current canvas (content bbox + padding, Canvas color
-  // background, natural resolution) to the clipboard. Falls back to download
-  // if the browser doesn't support ClipboardItem image/png. Awaits any
-  // in-flight paste/restore before snapshotting (wave-3 mutation queue).
+  // background, share-friendly display resolution) to the clipboard. Falls
+  // back to download if the browser doesn't support ClipboardItem image/png.
+  // Awaits any in-flight paste/restore before snapshotting (wave-3 mutation
+  // queue).
   copyPng: () => Promise<void>;
-  // Save the same PNG to the user's Downloads folder.
+  // Copy the same Canvas at source-preserving resolution. This is opt-in
+  // because large screenshots can create very large clipboard payloads.
+  copyFullSizePng: () => Promise<void>;
+  // Save the same Canvas at source-preserving resolution to the user's
+  // Downloads folder.
   downloadPng: () => Promise<void>;
   // ADR-0006 layer reorder. Operate on the current active selection, scoped
   // to Image-kind members (Annotations in a mixed selection are ignored and
@@ -1539,13 +1547,32 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       return { left: minLeft, top: minTop, width, height };
     };
 
+    // Freeform intentionally shrinks large pasted Images on the Canvas by
+    // setting Fabric scaleX/scaleY, while leaving the source element pixels
+    // intact. Export must invert that Image scale so a 3000px screenshot shown
+    // as an 800px Image copies out near 3000px wide instead of baking in the
+    // downsampled display size. A single Fabric export multiplier applies to
+    // the whole Canvas, so use the largest source/display ratio among Images.
+    const exportMultiplierForCanvas = (canvas: Canvas) => {
+      return imageObjects(canvas).reduce((multiplier, object) => {
+        const image = object as FabricImage;
+        const width = image.width ?? 0;
+        const height = image.height ?? 0;
+        const scaleX = Math.abs(image.scaleX ?? 1);
+        const scaleY = Math.abs(image.scaleY ?? 1);
+        const widthMultiplier = width > 0 && scaleX > 0 ? 1 / scaleX : 1;
+        const heightMultiplier = height > 0 && scaleY > 0 ? 1 / scaleY : 1;
+        return Math.max(multiplier, widthMultiplier, heightMultiplier);
+      }, 1);
+    };
+
     // Build the export PNG dataUrl. Pipeline: compute the content bbox,
-    // temporarily reset zoom + pan to identity (so 1 scene unit = 1 output
-    // pixel — i.e., natural per-Image resolution preserved, only the
-    // auto-fit display zoom is inverted), apply the chosen Canvas color as
-    // the Fabric backgroundColor, ask Fabric to crop to the bbox + padding
-    // via `toDataURL`'s {left, top, width, height} region, then restore the
-    // original viewport + background. We use Fabric's built-in region
+    // temporarily reset zoom + pan to identity, choose either display-size
+    // export or a multiplier that inverts paste-time Image downscaling, apply
+    // the chosen Canvas color as the Fabric backgroundColor, ask Fabric to crop
+    // to the bbox + padding via `toDataURL`'s {left, top, width, height}
+    // region, then restore the original viewport + background. We use
+    // Fabric's built-in region
     // cropping rather than a hand-rolled offscreen canvas because: (a) the
     // region option is exactly the right shape, and (b) Fabric handles
     // backgroundColor fill and object rendering in one shot — re-doing that
@@ -1556,7 +1583,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // backgroundColor (verified in node_modules/fabric/dist/index.node.mjs
     // around line 2227), so the output PNG retains its alpha channel and
     // any empty space stays transparent.
-    const exportDataUrl = (): string | null => {
+    const exportDataUrl = (resolution: FreeformExportResolution = 'display'): string | null => {
       const canvas = canvasRef.current;
       if (!canvas) return null;
       const bbox = contentBoundingBox(canvas);
@@ -1579,12 +1606,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       const originalWidth = canvas.getWidth();
       const originalHeight = canvas.getHeight();
 
-      // Identity viewport: scene 1 unit = display 1 pixel. With multiplier=1
-      // below, output 1 pixel = scene 1 unit, which means each Image renders
-      // at its paste-time scaled size — the auto-fit display zoom is undone,
-      // but per-Image scaleX (from MAX_PASTE_WIDTH clamping) stays. That
-      // matches the issue spec's "natural resolution of pasted screenshots".
+      // Identity viewport: scene 1 unit = display 1 pixel before the export
+      // multiplier is applied. Display-size export keeps multiplier=1; full-
+      // size export restores source pixels for pasted Images whose Fabric
+      // scale was reduced to fit the UI.
       canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      const exportMultiplier = resolution === 'full-size' ? exportMultiplierForCanvas(canvas) : 1;
 
       // Canvas color → export background. Transparent => '' (Fabric skips
       // the fill, alpha preserved). Capturing canvasColor through a ref so a
@@ -1603,10 +1630,9 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         canvas.backgroundColor = derivedColorRef.current ?? '#ffffff';
       }
 
-      // Bbox + padding in scene coords. EXPORT_PADDING is in NATURAL output
-      // pixels (= scene units under identity vpt + multiplier=1). Padding is
-      // additive on each side so the visible margin is EXPORT_PADDING px on
-      // top/bottom/left/right.
+      // Bbox + padding in scene coords. The export multiplier scales both
+      // content and padding into final output pixels. In display-size mode this
+      // stays compact; in full-size mode it preserves Image source density.
       const left = bbox.left - EXPORT_PADDING;
       const top = bbox.top - EXPORT_PADDING;
       const width = bbox.width + EXPORT_PADDING * 2;
@@ -1616,7 +1642,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       try {
         dataUrl = canvas.toDataURL({
           format: 'png',
-          multiplier: 1,
+          multiplier: exportMultiplier,
           left,
           top,
           width,
@@ -1636,6 +1662,38 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         canvas.requestRenderAll();
       }
       return dataUrl;
+    };
+
+    const copyExport = async (
+      resolution: FreeformExportResolution,
+      successMessage: string,
+      fallbackFileName: string,
+      fallbackMessage: string,
+    ) => {
+      // Drain the mutation queue first. If a paste or undo/redo is in flight,
+      // snapshotting now would either miss the new content or capture a
+      // half-applied state mid-restore. The queue resolves ordered, so once
+      // previous-tail settles all earlier ops have landed.
+      await mutationQueueRef.current;
+      const dataUrl = exportDataUrl(resolution);
+      if (!dataUrl) {
+        // Buttons are gated on hasContent so this branch is rare — but a race
+        // (e.g., last Image deleted between click and queue drain) can land us
+        // here. Silent-skip rather than surface a toast for what looks like a
+        // no-op to the user.
+        return;
+      }
+      const copied = await copyPngDataUrlToClipboard(dataUrl);
+      if (copied) {
+        onToast(successMessage, 'success');
+      } else {
+        // Mirror Skitch's fallback: if ClipboardItem image/png is unsupported
+        // (Firefox without permission, older Safari, etc.), download the file
+        // and surface the substitution as a warning so the user understands why
+        // their paste target is empty.
+        downloadDataUrl(dataUrl, fallbackFileName);
+        onToast(fallbackMessage, 'warning');
+      }
     };
 
     useImperativeHandle(
@@ -1679,8 +1737,8 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // Scale-to-fit at paste time: clamp display width at MAX_PASTE_WIDTH.
             // We modify Fabric's scaleX/scaleY, NOT the underlying source pixels —
             // the HTMLImageElement keeps its naturalWidth/naturalHeight. This means
-            // a future "export at full resolution" feature can still recover the
-            // original pixels.
+            // exportMultiplierForCanvas can recover the original pixels when
+            // copying/downloading the Canvas.
             const scale = naturalWidth > MAX_PASTE_WIDTH ? MAX_PASTE_WIDTH / naturalWidth : 1;
             const isSelect = activeToolRef.current === 'select';
             image.set({
@@ -1771,37 +1829,26 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           saveHistorySnapshot();
         },
         copyPng: async () => {
-          // Drain the mutation queue first. If a paste or undo/redo is in
-          // flight, snapshotting now would either miss the new content or
-          // capture a half-applied state mid-restore. The queue resolves
-          // ordered, so once previous-tail settles all earlier ops have
-          // landed. Wave-3 mutation queue heads-up.
-          await mutationQueueRef.current;
-          const dataUrl = exportDataUrl();
-          if (!dataUrl) {
-            // Buttons are gated on hasContent so this branch is rare — but
-            // a race (e.g., last Image deleted between click and queue drain)
-            // can land us here. Silent-skip rather than surface a toast for
-            // what looks like a no-op to the user.
-            return;
-          }
-          const copied = await copyPngDataUrlToClipboard(dataUrl);
-          if (copied) {
-            onToast('Copied PNG to clipboard', 'success');
-          } else {
-            // Mirror Skitch's fallback: if ClipboardItem image/png is
-            // unsupported (Firefox without permission, older Safari, etc.),
-            // download the file and surface the substitution as a warning
-            // so the user understands why their paste target is empty.
-            downloadDataUrl(dataUrl, EXPORT_FILE_NAME);
-            onToast('Clipboard copy not supported. Downloaded PNG instead.', 'warning');
-          }
+          await copyExport(
+            'display',
+            'Copied PNG to clipboard',
+            EXPORT_FILE_NAME,
+            'Clipboard copy not supported. Downloaded PNG instead.',
+          );
+        },
+        copyFullSizePng: async () => {
+          await copyExport(
+            'full-size',
+            'Copied full-size PNG to clipboard',
+            FULL_SIZE_EXPORT_FILE_NAME,
+            'Clipboard copy not supported. Downloaded full-size PNG instead.',
+          );
         },
         downloadPng: async () => {
           await mutationQueueRef.current;
-          const dataUrl = exportDataUrl();
+          const dataUrl = exportDataUrl('full-size');
           if (!dataUrl) return;
-          downloadDataUrl(dataUrl, EXPORT_FILE_NAME);
+          downloadDataUrl(dataUrl, FULL_SIZE_EXPORT_FILE_NAME);
         },
         deleteSelected: () => {
           const canvas = canvasRef.current;
