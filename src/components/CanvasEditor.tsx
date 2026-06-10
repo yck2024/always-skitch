@@ -16,7 +16,7 @@ import {
 } from 'fabric';
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
-import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
+import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
 // (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
@@ -628,8 +628,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     copyPng: async () => {
       const dataUrl = exportDataUrl();
       if (!dataUrl) return;
-      const blob = await dataUrlToBlob(dataUrl);
-      const copied = await copyPngBlobToClipboard(blob);
+      const copied = await copyPngDataUrlToClipboard(dataUrl);
       if (copied) {
         onToast('Copied PNG to clipboard', 'success');
       } else {

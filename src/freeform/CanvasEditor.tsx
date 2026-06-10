@@ -17,7 +17,7 @@ import {
 } from 'fabric';
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
-import { copyPngBlobToClipboard, dataUrlToBlob, downloadDataUrl } from '../utils/export';
+import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { extractDominantColor } from './utils/extractDominantColor';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
@@ -1785,8 +1785,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             // what looks like a no-op to the user.
             return;
           }
-          const blob = await dataUrlToBlob(dataUrl);
-          const copied = await copyPngBlobToClipboard(blob);
+          const copied = await copyPngDataUrlToClipboard(dataUrl);
           if (copied) {
             onToast('Copied PNG to clipboard', 'success');
           } else {
