@@ -556,12 +556,13 @@ export default function FreeformApp() {
           Shortcuts
         </button>
         {/* Export group (issue #10). Right-aligned via the .export-actions
-            margin-left:auto rule shared with Skitch's toolbar. Both buttons
-            disabled when canvas has no Images AND no Annotations — driven by
-            `onHasContentChange` from the editor. Copy PNG falls back to
-            Download when the browser doesn't support ClipboardItem image/png,
-            matching Skitch's behavior; the editor surfaces a toast in that
-            case so the user knows why their paste target is empty. */}
+            margin-left:auto rule shared with Skitch's toolbar. Export buttons
+            are disabled when canvas has no Images AND no Annotations — driven
+            by `onHasContentChange` from the editor. Copy PNG is the compact
+            default; Copy Full Size PNG preserves pasted Image source pixels
+            for zoom-heavy sharing. Download is always full-size. Both copy
+            actions fall back to Download when the browser doesn't support
+            ClipboardItem image/png. */}
         <div className="toolbar-group export-actions" role="group" aria-label="Export commands">
           <button
             type="button"
@@ -573,7 +574,16 @@ export default function FreeformApp() {
           <button
             type="button"
             disabled={!hasContent}
+            onClick={() => void editorRef.current?.copyFullSizePng()}
+            title="Copy at source resolution"
+          >
+            Copy Full Size PNG
+          </button>
+          <button
+            type="button"
+            disabled={!hasContent}
             onClick={() => void editorRef.current?.downloadPng()}
+            title="Download at source resolution"
           >
             Download
           </button>
