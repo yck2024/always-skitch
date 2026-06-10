@@ -14,15 +14,16 @@ export function downloadDataUrl(dataUrl: string, fileName = EXPORT_FILE_NAME): v
   anchor.remove();
 }
 
-export async function copyPngBlobToClipboard(blob: Blob): Promise<boolean> {
+export async function copyPngDataUrlToClipboard(dataUrl: string): Promise<boolean> {
   if (!navigator.clipboard || !('ClipboardItem' in window)) {
     return false;
   }
 
   try {
+    const blobPromise = dataUrlToBlob(dataUrl);
     await navigator.clipboard.write([
       new ClipboardItem({
-        [blob.type || 'image/png']: blob,
+        'image/png': blobPromise,
       }),
     ]);
     return true;

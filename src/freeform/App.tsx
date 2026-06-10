@@ -315,6 +315,9 @@ export default function FreeformApp() {
       } else if (meta && key === 'y' && !isEditingText) {
         event.preventDefault();
         editorRef.current?.redo();
+      } else if (meta && key === 'c' && !isEditingText && hasContent) {
+        event.preventDefault();
+        void editorRef.current?.copyPng();
       } else if ((event.key === 'Backspace' || event.key === 'Delete') && !isEditingText) {
         // Delete / Backspace removes whatever is currently selected
         // (Images and/or Annotations — see ADR-0006 consequences for why
@@ -392,7 +395,7 @@ export default function FreeformApp() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts, hasAnnotations]);
+  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts, hasContent, hasAnnotations]);
 
   return (
     <div className="app">
@@ -664,6 +667,7 @@ const FREEFORM_ACTION_SHORTCUTS: ShortcutRow[] = [
 
 const FREEFORM_COMBO_SHORTCUTS: ShortcutRow[] = [
   ['Cmd / Ctrl + V', 'Paste an image (adds to Canvas)'],
+  ['Cmd / Ctrl + C', 'Copy Canvas PNG'],
   ['Cmd / Ctrl + Z', 'Undo'],
   ['Cmd / Ctrl + Shift + Z', 'Redo'],
   ['Cmd / Ctrl + Y', 'Redo'],
