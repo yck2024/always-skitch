@@ -1,6 +1,6 @@
 # 0007 Clear Canvas wipes all Images and Annotations, not just Annotations
 
-Freeform exposes a **Clear Canvas** command via a toolbar button. It removes every **Image** and **Annotation** from the **Canvas** in a single undoable step. Settings — **Active color**, **Canvas color**, and the active tool — are preserved. The button sits in the destructive-actions cluster (immediately after Delete), is disabled when the **Canvas** has no content, and prompts a `window.confirm` before executing. There is no keyboard shortcut.
+Freeform exposes a **Clear Canvas** command via a toolbar button and a layered `Esc` shortcut. It removes every **Image** and **Annotation** from the **Canvas** in a single undoable step. Settings — **Active color**, **Canvas color**, and the active tool — are preserved. The button sits in the destructive-actions cluster (immediately after Delete), is disabled when the **Canvas** has no content, and prompts a `window.confirm` before executing. The keyboard behavior was added after the original decision; see the update below.
 
 ## Considered options
 
@@ -10,7 +10,7 @@ Freeform exposes a **Clear Canvas** command via a toolbar button. It removes eve
 
 - **Reuse Skitch's `c` keyboard shortcut**: rejected. The two routes deliberately don't share semantics (CONTEXT-MAP.md). Binding `c` to a wipe-everything action in one route and a wipe-annotations action in the other is a punji stick for dual-route users — they hit `c` in Freeform expecting Skitch-flavored "drop my arrows" and lose their **Images** instead. The cost of binding `c` outweighs the convenience for a low-frequency gesture.
 
-- **Add a different shortcut (`Shift+C`, `Cmd+Backspace`, etc.)**: deferred. **Clear Canvas** is a once-per-session gesture; keyboard convenience matters less than for tools the user invokes constantly. Easier to add a shortcut later if demand emerges than to take one back once users have learned it.
+- **Add a different shortcut (`Shift+C`, `Cmd+Backspace`, etc.)**: originally deferred. **Clear Canvas** is a once-per-session gesture; keyboard convenience matters less than for tools the user invokes constantly. The later `Esc` update below revisits this after demand emerged for quickly starting the next screenshot.
 
 - **"Paste as New" — a second paste button that does Clear+Paste atomically**: deferred. Matches Skitch's "paste replaces Background" muscle memory exactly. But it's a second way to do something users can already do by chaining (`Clear Canvas` then paste), and shipping two paste buttons up front adds a learning step that may not pay off. Reconsider if users naturally request it.
 
@@ -26,8 +26,16 @@ Freeform exposes a **Clear Canvas** command via a toolbar button. It removes eve
 
 - This is the first user-visible Freeform operation whose verb name overlaps with a Skitch operation but whose semantics deliberately diverge. CONTEXT.md captures the distinction in the **Clear Canvas** glossary entry. Future Freeform commands that map to Skitch concepts should follow the same pattern: pick names that make the asymmetry explicit (so not just `Clear`) and document the divergence in CONTEXT.md.
 
-- No keyboard shortcut is published in the Shortcuts modal. If a shortcut is added later, both the modal and the CONTEXT.md entry will need updating in lockstep.
+- The Shortcuts modal and the CONTEXT.md entry document the layered `Esc` behavior in lockstep.
 
 ## Update — partial supersession by ADR-0010
 
 The "Annotations-only Clear" alternative rejected above is partially superseded by [ADR-0010](../../../../.agents/config/adr/0010-freeform-clear-annotations.md). Freeform now exposes both **Clear Annotations** and **Clear Canvas** as siblings; the "group-select + Delete is enough" reasoning didn't anticipate the workflow of redoing all marks across multiple **Images** while keeping the **Images**. ADR-0007's Clear Canvas decision itself is unchanged.
+
+## Update — layered `Esc` shortcut
+
+Freeform's common workflow is a sequence of short-lived Canvases: paste a screenshot, annotate or export it, clear, then paste the next screenshot. The repeated toolbar trip makes **Clear Canvas** frequent enough to justify a keyboard entry point.
+
+`Esc` keeps its conventional cancellation priority. While the shortcuts modal, color picker, or right-click menu is open, it closes that overlay. While editing text, it exits text editing. While a drawing tool is active, it returns to Select. Only `Esc` pressed while already in Select with content on the Canvas opens the same confirmation used by the toolbar button; confirmation executes the existing undoable `clearCanvas()` command. Key-repeat events do not reopen the prompt.
+
+This layered behavior avoids turning an ordinary cancel gesture directly into a destructive operation, while making the steady-state “clear, then paste the next screenshot” flow accessible with one key plus confirmation. The Shortcuts modal and `src/freeform/CONTEXT.md` are updated with the same semantics.

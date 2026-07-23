@@ -44,7 +44,7 @@ The user command that wipes every **Annotation** from the **Canvas**, leaving **
 _Avoid_: erase, wipe, reset annotations, drop marks
 
 **Clear Canvas**:
-The user command that wipes every **Image** and **Annotation** from the **Canvas**, leaving it empty. **Active color**, **Canvas color**, and the active tool are preserved — they are settings, not content. The action is undoable: Cmd+Z restores the prior state. Distinct from **Clear Annotations**, which keeps **Images** and only wipes the annotation layer — Freeform exposes both as siblings, ordered left-to-right in the toolbar as least-to-most destructive.
+The user command that wipes every **Image** and **Annotation** from the **Canvas**, leaving it empty. **Active color**, **Canvas color**, and the active tool are preserved — they are settings, not content. The action is undoable: Cmd+Z restores the prior state. Available from the toolbar and through a layered `Esc` shortcut: overlays close first, an active drawing tool returns to Select, and `Esc` while already in Select prompts before clearing. Distinct from **Clear Annotations**, which keeps **Images** and only wipes the annotation layer — Freeform exposes both as siblings, ordered left-to-right in the toolbar as least-to-most destructive.
 _Avoid_: reset, new canvas, empty, wipe, start over
 
 ## Relationships

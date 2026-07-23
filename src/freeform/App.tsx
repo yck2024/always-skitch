@@ -52,6 +52,12 @@ const FREEFORM_TOOLS: Array<{ tool: Tool; label: string }> = [
   { tool: 'blur', label: 'Blur' },
 ];
 
+// Shared by the toolbar button and the layered Esc shortcut. Keeping the
+// destructive prompt in one place prevents the two Clear Canvas entry points
+// from drifting apart.
+const CLEAR_CANVAS_CONFIRM_MESSAGE =
+  'Clear the Canvas? All Images and Annotations will be removed. Use Undo to restore.';
+
 export default function FreeformApp() {
   const editorRef = useRef<FreeformCanvasEditorHandle | null>(null);
   const [hasImages, setHasImages] = useState(false);
@@ -298,6 +304,16 @@ export default function FreeformApp() {
         }
         return;
       }
+      // The color picker is another transient overlay, so it claims Esc before
+      // Clear Canvas. Suppress other shortcuts while it is open, matching the
+      // behavior of the shared picker in Skitch.
+      if (colorPickerOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setColorPickerOpen(false);
+        }
+        return;
+      }
       // `?` opens the shortcuts modal (Shift+/ on US layouts). Skitch uses the
       // same binding; keeping it identical so muscle memory transfers between
       // the two routes.
@@ -327,14 +343,22 @@ export default function FreeformApp() {
         event.preventDefault();
         editorRef.current?.deleteSelected();
       } else if (event.key === 'Escape' && !isEditingText) {
-        // Esc has two layered jobs: dismiss the right-click menu first if
-        // open, otherwise bail any drawing tool back to Select. Mirrors a
-        // common app convention (Figma/Photoshop) where a transient overlay
-        // claims Esc before the global tool reset does.
+        // Esc is deliberately layered so a cancel gesture cannot immediately
+        // become a destructive one: dismiss a menu first, then return a
+        // drawing tool to Select, and only when already in Select offer to
+        // clear the Canvas. The confirm gate protects against accidental
+        // presses; the operation itself remains undoable via Cmd/Ctrl+Z.
+        event.preventDefault();
         if (contextMenu) {
           closeContextMenu();
-        } else {
+        } else if (activeTool !== 'select') {
           setActiveTool('select');
+        } else if (
+          hasContent &&
+          !event.repeat &&
+          window.confirm(CLEAR_CANVAS_CONFIRM_MESSAGE)
+        ) {
+          editorRef.current?.clearCanvas();
         }
       } else if (!meta && !isEditingText) {
         // Single-key tool shortcuts (#6), mirroring Skitch's bindings so muscle
@@ -395,7 +419,16 @@ export default function FreeformApp() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [appendImageFile, contextMenu, closeContextMenu, showShortcuts, hasContent, hasAnnotations]);
+  }, [
+    appendImageFile,
+    contextMenu,
+    closeContextMenu,
+    showShortcuts,
+    colorPickerOpen,
+    activeTool,
+    hasContent,
+    hasAnnotations,
+  ]);
 
   return (
     <div className="app">
@@ -532,11 +565,12 @@ export default function FreeformApp() {
             undoable step. Gated on `hasContent` (same flag driving the export
             buttons) so the button only enables when there's something to
             clear. The window.confirm wording is part of the spec — do not
-            edit without updating the issue and ADR. No keyboard shortcut. */}
+            edit without updating the issue and ADR. The layered Esc shortcut
+            uses the same prompt. */}
         <button
           type="button"
           onClick={() => {
-            if (window.confirm('Clear the Canvas? All Images and Annotations will be removed. Use Undo to restore.')) {
+            if (window.confirm(CLEAR_CANVAS_CONFIRM_MESSAGE)) {
               editorRef.current?.clearCanvas();
             }
           }}
@@ -671,7 +705,7 @@ const FREEFORM_ACTION_SHORTCUTS: ShortcutRow[] = [
   [']', 'Bring selected Image(s) to front'],
   ['[', 'Send selected Image(s) to back'],
   ['C', 'Clear annotations (confirms first)'],
-  ['Esc', 'Switch to Select / close menus'],
+  ['Esc', 'Close overlays / Select / Clear Canvas (confirms)'],
   ['?', 'Open this shortcut list'],
 ];
 
