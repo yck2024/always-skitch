@@ -382,7 +382,7 @@ export default function FreeformApp() {
         editorRef.current?.redo();
       } else if (meta && key === 'c' && !isEditingText && hasContent) {
         event.preventDefault();
-        void editorRef.current?.copyPng();
+        void editorRef.current?.copyFullSizePng();
       } else if ((event.key === 'Backspace' || event.key === 'Delete') && !isEditingText) {
         // Delete / Backspace removes whatever is currently selected
         // (Images and/or Annotations — see ADR-0006 consequences for why
@@ -656,8 +656,9 @@ export default function FreeformApp() {
             margin-left:auto rule shared with Skitch's toolbar. Export buttons
             are disabled when canvas has no Images AND no Annotations — driven
             by `onHasContentChange` from the editor. Copy PNG is the compact
-            default; Copy Full Size PNG preserves pasted Image source pixels
-            for zoom-heavy sharing. Download is always full-size. Both copy
+            display-size variant; Copy Full Size PNG preserves pasted Image
+            source pixels and is what Cmd/Ctrl+C triggers. Download is always
+            full-size. Both copy
             actions fall back to Download when the browser doesn't support
             ClipboardItem image/png. */}
         <div className="toolbar-group export-actions" role="group" aria-label="Export commands">
@@ -775,7 +776,7 @@ const FREEFORM_ACTION_SHORTCUTS: ShortcutRow[] = [
 
 const FREEFORM_COMBO_SHORTCUTS: ShortcutRow[] = [
   ['Cmd / Ctrl + V', 'Paste an image (adds to Canvas)'],
-  ['Cmd / Ctrl + C', 'Copy Canvas PNG'],
+  ['Cmd / Ctrl + C', 'Copy Full Size PNG'],
   ['Cmd / Ctrl + Z', 'Undo'],
   ['Cmd / Ctrl + Shift + Z', 'Redo'],
   ['Cmd / Ctrl + Y', 'Redo'],
