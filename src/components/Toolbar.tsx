@@ -1,11 +1,15 @@
 import type { Tool } from '../types';
 import { PALETTE } from '../palette';
+import { LINE_WEIGHTS } from '../weights';
 import { ColorPicker } from './ColorPicker';
+import { WeightPicker } from './WeightPicker';
 
 interface ToolbarProps {
   activeTool: Tool;
   activeColor: string;
   colorPickerOpen: boolean;
+  activeWeight: number;
+  weightPickerOpen: boolean;
   canUndo: boolean;
   canRedo: boolean;
   hasImage: boolean;
@@ -13,6 +17,8 @@ interface ToolbarProps {
   onToolChange: (tool: Tool) => void;
   onColorChange: (color: string) => void;
   onColorPickerOpenChange: (open: boolean) => void;
+  onWeightChange: (weight: number) => void;
+  onWeightPickerOpenChange: (open: boolean) => void;
   onUndo: () => void;
   onRedo: () => void;
   onDelete: () => void;
@@ -35,6 +41,8 @@ export function Toolbar({
   activeTool,
   activeColor,
   colorPickerOpen,
+  activeWeight,
+  weightPickerOpen,
   canUndo,
   canRedo,
   hasImage,
@@ -42,6 +50,8 @@ export function Toolbar({
   onToolChange,
   onColorChange,
   onColorPickerOpenChange,
+  onWeightChange,
+  onWeightPickerOpenChange,
   onUndo,
   onRedo,
   onDelete,
@@ -77,6 +87,14 @@ export function Toolbar({
           disabled={!hasImage}
           onChange={onColorChange}
           onOpenChange={onColorPickerOpenChange}
+        />
+        <WeightPicker
+          weights={LINE_WEIGHTS}
+          value={activeWeight}
+          open={weightPickerOpen}
+          disabled={!hasImage}
+          onChange={onWeightChange}
+          onOpenChange={onWeightPickerOpenChange}
         />
       </div>
 

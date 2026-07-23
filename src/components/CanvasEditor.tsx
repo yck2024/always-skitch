@@ -1,11 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
+  ActiveSelection,
   Canvas,
   Circle,
   FabricImage,
   FabricObject,
   Group,
   Line,
+  Point,
   Polygon,
   Rect,
   Text,
@@ -24,7 +26,6 @@ import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 FabricObject.ownDefaults.originX = 'left';
 FabricObject.ownDefaults.originY = 'top';
 
-const STROKE_WIDTH = 8;
 const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
 const FONT_SIZE = 32;
 const CALLOUT_SIZE = 42;
@@ -41,6 +42,7 @@ interface CanvasEditorProps {
   imageDataUrl: string | null;
   activeTool: Tool;
   activeColor: string;
+  activeWeight: number;
   onToolChange: (tool: Tool) => void;
   onToast: (text: string, tone?: 'success' | 'warning' | 'info') => void;
   onImageLoaded: (hasImage: boolean) => void;
@@ -55,6 +57,7 @@ export interface CanvasEditorHandle {
   copyPng: () => Promise<void>;
   downloadPng: () => void;
   recolorSelected: (color: string) => void;
+  reweightSelected: (weight: number) => void;
 }
 
 function annotationObjects(canvas: Canvas) {
@@ -80,7 +83,7 @@ function makeBackground(image: FabricImage) {
   return image;
 }
 
-function makeArrow(color: string, scale: number, startX: number, startY: number, endX: number, endY: number) {
+function makeArrow(color: string, scale: number, weight: number, startX: number, startY: number, endX: number, endY: number) {
   // Skitch-style tapered arrow: a single polygon with a pointy tail, narrow
   // body, and a wide triangular head. Points are pre-rotated so we don't have
   // to fight Fabric's bbox-rotation pivot.
@@ -100,8 +103,14 @@ function makeArrow(color: string, scale: number, startX: number, startY: number,
   // Skitch silhouette, and the body is thick enough to be clearly visible.
   const rawHeadLen = Math.min(Math.max(length * 0.22, 24 * scale), 80 * scale);
   const headLen = Math.min(rawHeadLen, length * 0.4);
-  const headHalf = headLen * 0.42;
-  const bodyHalf = Math.max(headHalf * 0.32, 4 * scale);
+  // Line weight (ADR-0011) scales only the cross-axis widths. headLen stays
+  // length-proportional so a Thick short arrow doesn't turn into all head.
+  // w = weight / 8 pins Medium to the pre-feature geometry: at weight 8,
+  // headHalf is unchanged and the body floor (weight / 2) * scale is the
+  // historical 4 * scale — pixel-identical to the old constants.
+  const w = weight / 8;
+  const headHalf = headLen * 0.42 * w;
+  const bodyHalf = Math.max(headHalf * 0.32, (weight / 2) * scale);
   const bodyEnd = Math.max(0, length - headLen);
   const points = [
     rotate(0, 0),                       // tail tip
@@ -117,6 +126,33 @@ function makeArrow(color: string, scale: number, startX: number, startY: number,
   });
   polygon.set('data', { kind: 'arrow' });
   return polygon;
+}
+
+function reweightArrow(canvas: Canvas, poly: Polygon, weight: number, scale: number): Polygon {
+  // A weight change can't be an in-place set() on an arrow: the taper is
+  // baked into the polygon's point geometry, not carried by a strokeWidth.
+  // Recover the arrow's absolute tail and tip and rebuild the polygon
+  // between them at the new weight. In makeArrow's point order, points[0]
+  // is the tail tip and points[3] the arrow tip (polygon-local space);
+  // Fabric stores local points offset by pathOffset, so subtract it before
+  // mapping through the object's transform matrix.
+  const matrix = poly.calcTransformMatrix();
+  const toAbsolute = (pt: { x: number; y: number }) =>
+    util.transformPoint(new Point(pt.x - poly.pathOffset.x, pt.y - poly.pathOffset.y), matrix);
+  const tail = toAbsolute(poly.points[0]);
+  const tip = toAbsolute(poly.points[3]);
+  const replacement = makeArrow(poly.fill as string, scale, weight, tail.x, tail.y, tip.x, tip.y);
+  // Preserve interactivity flags and the stacking position so the swap is
+  // invisible apart from the new thickness: capture the old index, remove
+  // (indices after it shift down by one), add (appends on top), then move
+  // the replacement back into the vacated slot.
+  replacement.selectable = poly.selectable;
+  replacement.evented = poly.evented;
+  const index = canvas.getObjects().indexOf(poly);
+  canvas.remove(poly);
+  canvas.add(replacement);
+  canvas.moveObjectTo(replacement, index);
+  return replacement;
 }
 
 function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: number, endX: number, endY: number) {
@@ -202,7 +238,7 @@ function createPixelatedCrop(image: HTMLImageElement, x: number, y: number, widt
 }
 
 export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(function CanvasEditor(
-  { imageDataUrl, activeTool, activeColor, onToolChange, onToast, onImageLoaded, onHistoryChange },
+  { imageDataUrl, activeTool, activeColor, activeWeight, onToolChange, onToast, onImageLoaded, onHistoryChange },
   ref,
 ) {
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
@@ -212,6 +248,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const drawingRef = useRef<DrawingState | null>(null);
   const activeToolRef = useRef(activeTool);
   const activeColorRef = useRef(activeColor);
+  const activeWeightRef = useRef(activeWeight);
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
   const restoringRef = useRef(false);
@@ -261,6 +298,13 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   useEffect(() => {
     activeColorRef.current = activeColor;
   }, [activeColor]);
+
+  // Ref mirror like activeColorRef above: the canvas-creation effect must NOT
+  // depend on activeWeight (that would tear down and rebuild the Fabric
+  // canvas on every preset change), so mouse handlers read the ref instead.
+  useEffect(() => {
+    activeWeightRef.current = activeWeight;
+  }, [activeWeight]);
 
   useEffect(() => {
     if (!canvasElRef.current) return;
@@ -335,6 +379,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       const scale = annotationScale();
 
       const color = activeColorRef.current;
+      const weight = activeWeightRef.current;
 
       if (activeToolRef.current === 'rectangle') {
         const rect = new Rect({
@@ -344,7 +389,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           height: 1,
           fill: 'transparent',
           stroke: color,
-          strokeWidth: STROKE_WIDTH * scale,
+          strokeWidth: weight * scale,
           rx: 5 * scale,
           ry: 5 * scale,
           data: { kind: 'rectangle' },
@@ -354,7 +399,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       } else if (activeToolRef.current === 'arrow') {
         const line = new Line([pointer.x, pointer.y, pointer.x, pointer.y], {
           stroke: color,
-          strokeWidth: STROKE_WIDTH * scale,
+          strokeWidth: weight * scale,
           strokeLineCap: 'round',
           selectable: false,
           evented: false,
@@ -362,7 +407,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         const head = new Triangle({
           left: pointer.x,
           top: pointer.y,
-          width: 34 * scale,
+          // The preview head tracks the weight the same way makeArrow does:
+          // cross-axis width scales by weight / 8, length (height) does not.
+          width: 34 * scale * (weight / 8),
           height: 42 * scale,
           fill: color,
           originX: 'center',
@@ -425,7 +472,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       } else if (drawing.kind === 'arrow') {
         canvas.remove(drawing.line, drawing.head);
         if (Math.hypot(pointer.x - drawing.startX, pointer.y - drawing.startY) > 10) {
-          addFinalObject(makeArrow(activeColorRef.current, annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y));
+          addFinalObject(
+            makeArrow(activeColorRef.current, annotationScale(), activeWeightRef.current, drawing.startX, drawing.startY, pointer.x, pointer.y),
+          );
         }
       } else {
         canvas.remove(drawing.object);
@@ -655,6 +704,55 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         historyIndexRef.current = historyRef.current.length - 1;
         onHistoryChange(true, false);
       }
+    },
+    reweightSelected: (weight: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const activeObjects = canvas
+        .getActiveObjects()
+        .filter((object) => (object as FabricObject & { data?: { kind?: string } }).data?.kind !== 'background');
+      if (activeObjects.length === 0) return;
+      // Drop the selection BEFORE touching geometry: while an ActiveSelection
+      // is live, Fabric rewrites members' own transforms to group-relative
+      // coordinates, so calcTransformMatrix() inside reweightArrow would bake
+      // in the group transform and recover wrong absolute tail/tip points.
+      // Discarding restores plain absolute transforms; we re-select below.
+      canvas.discardActiveObject();
+      // Same annotationScale the annotations were created with, so a preset's
+      // canvas-px value lands identically whether set at draw time or here.
+      const scale = 1 / Math.max(displayScaleRef.current, 0.25);
+      const reselect = activeObjects.map((object) => {
+        const kind = (object as FabricObject & { data?: { kind?: string } }).data?.kind;
+        if (kind === 'rectangle') {
+          object.set({ strokeWidth: weight * scale });
+          object.setCoords();
+          return object;
+        }
+        if (kind === 'arrow') {
+          // Arrows are rebuilt, not mutated — the returned replacement takes
+          // the old polygon's place in the re-selection.
+          return reweightArrow(canvas, object as Polygon, weight, scale);
+        }
+        // Text, Steps, blur, and pixelate have no line weight — silently
+        // skip them (recolorSelected's behavior), but keep them selected.
+        return object;
+      });
+      // Serialize BEFORE re-selecting: serializeAnnotations reads each
+      // object's own left/top, which turn group-relative the moment an
+      // ActiveSelection wraps them again — snapshotting now keeps history
+      // states in absolute coordinates.
+      const next = serializeAnnotations(canvas);
+      if (next !== historyRef.current[historyIndexRef.current]) {
+        historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
+        historyIndexRef.current = historyRef.current.length - 1;
+        onHistoryChange(true, false);
+      }
+      if (reselect.length === 1) {
+        canvas.setActiveObject(reselect[0]);
+      } else {
+        canvas.setActiveObject(new ActiveSelection(reselect, { canvas }));
+      }
+      canvas.requestRenderAll();
     },
   }));
 

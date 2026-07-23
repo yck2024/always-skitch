@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorPicker } from '../components/ColorPicker';
 import { ShortcutsModal, type ShortcutRow } from '../components/ShortcutsModal';
 import { TopNav } from '../components/TopNav';
+import { WeightPicker } from '../components/WeightPicker';
 import { DEFAULT_COLOR, PALETTE } from '../palette';
+import { DEFAULT_WEIGHT, LINE_WEIGHTS } from '../weights';
 import type { ToastMessage, Tool } from '../types';
 import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from '../utils/clipboard';
 import { FreeformCanvasEditor, type FreeformCanvasColor, type FreeformCanvasEditorHandle } from './CanvasEditor';
@@ -74,6 +76,16 @@ export default function FreeformApp() {
   // pen color — and is reused so the two products feel related.
   const [activeColor, setActiveColor] = useState<string>(DEFAULT_COLOR);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  // Line weight (ADR-0011): the thickness new rectangles and arrows draw at.
+  // Same ownership rules as activeColor directly above — App-state (not
+  // Canvas-state) because it persists across pastes and never enters undo
+  // history. The Freeform divergence from Skitch applies here too: NO
+  // reset-on-paste effect (see the file-header comment about activeColor;
+  // weight follows the same rule). Clear Canvas / Clear Annotations leave it
+  // alone by construction — they operate on canvas objects and never touch
+  // this React state.
+  const [activeWeight, setActiveWeight] = useState<number>(DEFAULT_WEIGHT);
+  const [weightPickerOpen, setWeightPickerOpen] = useState(false);
   // Canvas color (empty-space color between Images). Component state only —
   // no localStorage, no router. Defaults to 'white' on every fresh session.
   // Not pushed to history; switching is a setting, not an edit. Narrowed to
@@ -176,6 +188,31 @@ export default function FreeformApp() {
   const handleColorChange = useCallback((color: string) => {
     setActiveColor(color);
     editorRef.current?.recolorSelected(color);
+  }, []);
+
+  // Weight picker change (ADR-0011): set the pen weight AND re-weight the
+  // current selection (if any). Structural mirror of handleColorChange
+  // above, including the deliberate absence of any reset-on-paste effect —
+  // Line weight persists across pastes, same as Active color (see
+  // src/freeform/CONTEXT.md).
+  const handleWeightChange = useCallback((weight: number) => {
+    setActiveWeight(weight);
+    editorRef.current?.reweightSelected(weight);
+  }, []);
+
+  // The two toolbar popovers (Active color, Line weight) are mutually
+  // exclusive: opening one closes the other so two overlapping popovers can
+  // never fight over the same toolbar row. Wrapping the raw setters here —
+  // rather than special-casing inside each picker component — keeps the rule
+  // in one place and leaves the shared pickers dumb.
+  const handleColorPickerOpenChange = useCallback((open: boolean) => {
+    setColorPickerOpen(open);
+    if (open) setWeightPickerOpen(false);
+  }, []);
+
+  const handleWeightPickerOpenChange = useCallback((open: boolean) => {
+    setWeightPickerOpen(open);
+    if (open) setColorPickerOpen(false);
   }, []);
 
   // ADR-0008 — paste-driven Canvas color update for Match mode.
@@ -314,6 +351,18 @@ export default function FreeformApp() {
         }
         return;
       }
+      // The weight picker is the same species of transient overlay as the
+      // color picker: Esc closes it first, and every other shortcut is
+      // suppressed while it is open. Mirrors the block above. (The two can
+      // never be open simultaneously — see the mutually-exclusive
+      // onOpenChange wrappers — so the order of these two blocks is moot.)
+      if (weightPickerOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setWeightPickerOpen(false);
+        }
+        return;
+      }
       // `?` opens the shortcuts modal (Shift+/ on US layouts). Skitch uses the
       // same binding; keeping it identical so muscle memory transfers between
       // the two routes.
@@ -425,6 +474,7 @@ export default function FreeformApp() {
     closeContextMenu,
     showShortcuts,
     colorPickerOpen,
+    weightPickerOpen,
     activeTool,
     hasContent,
     hasAnnotations,
@@ -466,7 +516,20 @@ export default function FreeformApp() {
           open={colorPickerOpen}
           disabled={!hasImages}
           onChange={handleColorChange}
-          onOpenChange={setColorPickerOpen}
+          onOpenChange={handleColorPickerOpenChange}
+        />
+        {/* Line weight picker (ADR-0011). Sits immediately after the Active
+            color picker and shares its disabled gate — both are pen settings
+            for new annotations, useless until an Image exists. No keyboard
+            shortcut by design (ADR-0011 defers one until feedback demands
+            it). */}
+        <WeightPicker
+          weights={LINE_WEIGHTS}
+          value={activeWeight}
+          open={weightPickerOpen}
+          disabled={!hasImages}
+          onChange={handleWeightChange}
+          onOpenChange={handleWeightPickerOpenChange}
         />
         {/* Canvas color picker — four small swatches in a dedicated toolbar
             group, intentionally visually distinct from the Active color picker
@@ -629,6 +692,7 @@ export default function FreeformApp() {
           hasImages={hasImages}
           activeTool={activeTool}
           activeColor={activeColor}
+          activeWeight={activeWeight}
           canvasColor={effectiveCanvasColor}
           derivedColor={derivedColor}
           onHasImagesChange={setHasImages}

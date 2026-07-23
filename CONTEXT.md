@@ -33,12 +33,17 @@ _Avoid_: outline, border, stroke
 **Recolor**:
 The act of changing color on the currently selected annotation(s).
 
+**Line weight**:
+The thickness that line-drawn **Annotations** (rectangles and arrows) are drawn at, chosen from three fixed presets (Thin / Medium / Thick) in a toolbar popover. Behaves like **Active color**: it applies to new annotations AND re-weights the currently selected annotation(s). Text, **Steps**, blur, and the **Halo** have no line weight.
+_Avoid_: stroke width ("stroke" belongs to **Halo**), width (ambiguous with rectangle geometry), thickness (preset labels only, not the property name), pen size
+
 ## Relationships
 
 - A **Background** hosts zero or more **Annotations**.
 - Each **Annotation** stores its own color; the **Active color** is the pen used when creating new ones.
 - Picking from the **Palette** sets the **Active color** AND **recolors** the current selection (if any).
-- **Active color** resets to red when a new image is pasted, and is not part of undo history.
+- Each rectangle and arrow stores its own **Line weight**; picking a preset sets the active weight AND re-weights the current selection (if any) — the same dual behavior as the **Palette**.
+- **Active color** resets to red and **Line weight** resets to Medium when a new image is pasted; neither is part of undo history.
 - A **Halo** always stays white regardless of **Active color** — the **Palette** is constrained to colors against which white halos remain readable.
 
 ## Example dialogue

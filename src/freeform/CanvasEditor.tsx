@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
+  ActiveSelection,
   Canvas,
   Circle,
   FabricImage,
@@ -16,6 +17,7 @@ import {
   util,
 } from 'fabric';
 import type { Tool } from '../types';
+import { DEFAULT_WEIGHT } from '../weights';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { extractDominantColor } from './utils/extractDominantColor';
@@ -54,7 +56,11 @@ type FreeformExportResolution = 'display' | 'full-size';
 // before we know whether they'll diverge (e.g., Freeform might want different
 // arrow proportions for multi-image flows). For now, parallel constants beat
 // premature abstraction.
-const STROKE_WIDTH = 8;
+//
+// Note the ABSENCE of the historical `STROKE_WIDTH = 8` constant: line
+// thickness is the user-picked Line weight now (ADR-0011), flowing in via the
+// `activeWeight` prop, with `DEFAULT_WEIGHT` (from ../weights) pinned to the
+// same 8 so Medium renders pixel-identical to the pre-feature constant.
 const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
 const FONT_SIZE = 32;
 const CALLOUT_SIZE = 42;
@@ -155,6 +161,16 @@ interface CanvasEditorProps {
   // NOT via this prop changing — that way we don't re-fire recolor on every
   // unrelated render.
   activeColor: string;
+  // Active Line weight (ADR-0011) for new rectangles and arrows, in canvas
+  // px (multiplied by annotationScale at draw time, exactly as the old
+  // STROKE_WIDTH constant was). Same contract as activeColor directly
+  // above: lives in App.tsx state so it persists across pastes, and
+  // re-weighting the current selection is driven via the imperative
+  // `reweightSelected` method, NOT via this prop changing — so we don't
+  // re-fire a reweight on every unrelated render. Only rectangles and
+  // arrows are weight-driven; text, Steps, blur, and Halos keep their
+  // hardcoded stroke widths (they have no Line weight — see CONTEXT.md).
+  activeWeight: number;
   // Canvas color mode for empty space between Images. NOT undoable — it is
   // a session setting, not an edit (see Canvas color glossary entry). One of
   // four named modes: 'white' / 'black' / 'transparent' (solid fill, solid
@@ -222,6 +238,15 @@ export interface FreeformCanvasEditorHandle {
   undo: () => void;
   redo: () => void;
   recolorSelected: (color: string) => void;
+  // ADR-0011: re-weight the line-drawn Annotations (rectangles and arrows)
+  // in the current selection to the given preset value. Silently skips
+  // every other kind — Images, text, Steps, blur — mirroring
+  // recolorSelected's contract. Rectangles re-weight in place; arrows are
+  // REBUILT (the tapered polygon bakes the weight into its cross-axis
+  // geometry, so no in-place set() can change it). The operation is one
+  // undoable history step; the weight SETTING itself never enters history
+  // (it's App-level session state, same as Active color).
+  reweightSelected: (weight: number) => void;
   // Remove every selected object from the canvas (Images and/or Annotations).
   // Pre-ADR-0006 this was Image-only — see ADR-0006 consequences: that filter
   // was a #7-era anachronism (Annotations weren't selectable yet at the time).
@@ -426,7 +451,22 @@ function nextImageLeft(canvas: Canvas): number {
 // Fabric's bbox-rotation pivot. Lifted from src/components/CanvasEditor.tsx —
 // kept as a local helper rather than imported because Freeform may diverge
 // (e.g., a future zoom-aware arrow could behave differently per Image).
-function makeArrow(color: string, scale: number, startX: number, startY: number, endX: number, endY: number) {
+//
+// `weight` (ADR-0011) scales only the CROSS-AXIS widths — the body and head
+// half-extents — by weight / DEFAULT_WEIGHT. headLen deliberately stays
+// length-proportional (unchanged formula), so the arrow keeps its iconic
+// silhouette at every weight instead of growing a longer snout. At Medium
+// (weight = 8) the math reduces exactly to the historical constants, so the
+// default arrow is pixel-identical to before the feature existed.
+function makeArrow(
+  color: string,
+  scale: number,
+  weight: number,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+) {
   const dx = endX - startX;
   const dy = endY - startY;
   const length = Math.hypot(dx, dy);
@@ -439,8 +479,14 @@ function makeArrow(color: string, scale: number, startX: number, startY: number,
   });
   const rawHeadLen = Math.min(Math.max(length * 0.22, 24 * scale), 80 * scale);
   const headLen = Math.min(rawHeadLen, length * 0.4);
-  const headHalf = headLen * 0.42;
-  const bodyHalf = Math.max(headHalf * 0.32, 4 * scale);
+  // Cross-axis scale factor: Medium (DEFAULT_WEIGHT = 8) is the reference
+  // weight, so w = 1 reproduces the historical proportions bit-for-bit.
+  const w = weight / DEFAULT_WEIGHT;
+  const headHalf = headLen * 0.42 * w;
+  // (weight / 2) * scale generalizes the old hardcoded `4 * scale` floor —
+  // which was STROKE_WIDTH / 2 in disguise: the body never gets thinner than
+  // half the nominal stroke a rectangle at the same weight would draw.
+  const bodyHalf = Math.max(headHalf * 0.32, (weight / 2) * scale);
   const bodyEnd = Math.max(0, length - headLen);
   const points = [
     rotate(0, 0),
@@ -564,6 +610,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       hasImages,
       activeTool,
       activeColor,
+      activeWeight,
       canvasColor,
       derivedColor,
       onHasImagesChange,
@@ -616,6 +663,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // re-bind handlers on every prop change. Matches Skitch's pattern.
     const activeToolRef = useRef(activeTool);
     const activeColorRef = useRef(activeColor);
+    // Mirror of activeWeight, same rationale as activeColorRef directly
+    // above. NEVER add activeWeight to the canvas-setup effect's deps
+    // instead — that effect disposes and recreates the Fabric canvas, so a
+    // frequently-changing value there would wipe the user's board on every
+    // preset pick.
+    const activeWeightRef = useRef(activeWeight);
     // Same trick for the optional selection-change callback: the canvas-setup
     // effect runs once, so we read through a ref to pick up identity changes.
     const onSelectionChangeRef = useRef(onSelectionChange);
@@ -875,6 +928,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     }, [activeColor]);
 
     useEffect(() => {
+      activeWeightRef.current = activeWeight;
+    }, [activeWeight]);
+
+    useEffect(() => {
       onSelectionChangeRef.current = onSelectionChange;
     }, [onSelectionChange]);
 
@@ -999,6 +1056,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
 
         const scale = annotationScale();
         const color = activeColorRef.current;
+        const weight = activeWeightRef.current;
 
         if (tool === 'rectangle') {
           const rect = new Rect({
@@ -1008,7 +1066,10 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             height: 1,
             fill: 'transparent',
             stroke: color,
-            strokeWidth: STROKE_WIDTH * scale,
+            // Line weight (ADR-0011): the active preset replaces the old
+            // hardcoded STROKE_WIDTH. At Medium (8) this is byte-identical
+            // to the pre-feature stroke.
+            strokeWidth: weight * scale,
             rx: 5 * scale,
             ry: 5 * scale,
             data: { kind: 'rectangle' },
@@ -1039,6 +1100,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             fill: hexToLowAlpha(color, 0.08),
             stroke: color,
             strokeDashArray: [12 * scale, 8 * scale],
+            // Deliberately NOT weight-driven: blur has no Line weight
+            // (ADR-0011 scopes the setting to rectangles and arrows only).
+            // This dashed outline is a fixed-width marquee affordance, not
+            // a line-drawn Annotation — it must render identically at every
+            // active weight.
             strokeWidth: 3 * scale,
             // Tag the preview with 'blur-preview' so recolorAnnotation's
             // existing switch case (utils/colors.ts) handles live recolor if
@@ -1053,9 +1119,18 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           // While dragging we draw a cheap line+triangle preview; the final
           // polygon arrow is constructed in mouse:up. The preview is two
           // primitives because they're trivial to update per frame.
+          //
+          // Weight-aware preview (ADR-0011), following makeArrow's
+          // cross-axis-only rule: the line thickness tracks the weight
+          // directly, and the triangle head scales its WIDTH by
+          // weight / DEFAULT_WEIGHT while its HEIGHT (the length axis)
+          // stays fixed — mirroring how makeArrow keeps headLen
+          // length-proportional. At Medium this is exactly the old
+          // 34x42 head.
+          const w = weight / DEFAULT_WEIGHT;
           const line = new Line([pointer.x, pointer.y, pointer.x, pointer.y], {
             stroke: color,
-            strokeWidth: STROKE_WIDTH * scale,
+            strokeWidth: weight * scale,
             strokeLineCap: 'round',
             selectable: false,
             evented: false,
@@ -1063,7 +1138,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           const head = new Triangle({
             left: pointer.x,
             top: pointer.y,
-            width: 34 * scale,
+            width: 34 * scale * w,
             height: 42 * scale,
             fill: color,
             originX: 'center',
@@ -1207,7 +1282,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             canvas.remove(drawing.line, drawing.head);
             if (Math.hypot(pointer.x - drawing.startX, pointer.y - drawing.startY) > 10) {
               addFinalObject(
-                makeArrow(activeColorRef.current, annotationScale(), drawing.startX, drawing.startY, pointer.x, pointer.y),
+                makeArrow(
+                  activeColorRef.current,
+                  annotationScale(),
+                  activeWeightRef.current,
+                  drawing.startX,
+                  drawing.startY,
+                  pointer.x,
+                  pointer.y,
+                ),
               );
             }
           }
@@ -1827,6 +1910,139 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           activeObjects.forEach((object) => recolorAnnotation(object, color));
           canvas.requestRenderAll();
           saveHistorySnapshot();
+        },
+        reweightSelected: (weight: number) => {
+          // Re-weight whatever is currently selected. Mirrors recolorSelected:
+          // picking a Line weight preset re-weights the current selection (if
+          // any) AND becomes the pen weight for future annotations. The pen
+          // side lives in App.tsx state; this handle covers the selection
+          // side. Only line-drawn kinds carry a Line weight (ADR-0011), so we
+          // filter to rectangles and arrows — Freeform canvases also hold
+          // Images, text, callouts, and blurs, and every one of those kinds
+          // is silently skipped, exactly like recolorSelected skips Images.
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const activeObjects = canvas.getActiveObjects();
+          const targets = activeObjects.filter((object) => {
+            const kind = (object as TaggedObject).data?.kind;
+            return kind === 'rectangle' || kind === 'arrow';
+          });
+          if (targets.length === 0) return;
+          // Drop the selection BEFORE transforming. While an ActiveSelection
+          // is live, each member's calcTransformMatrix has the group
+          // transform baked in — reading an arrow's absolute tail/tip through
+          // it (below) would double-apply that offset. Discarding first
+          // restores plain absolute transforms; we rebuild the selection at
+          // the end so from the user's perspective it never went away.
+          canvas.discardActiveObject();
+          // Same annotationScale formula the creation path uses (see the
+          // canvas-setup effect): a scene-coordinate stroke that LOOKS
+          // `weight` px wide on screen, with the divisor clamped so an
+          // extreme zoom-out can't produce an absurdly thick stroke.
+          // Replicated here because the helper is scoped inside the one-time
+          // setup effect and this handle can't reach it.
+          const scale = 1 / Math.max(displayScaleRef.current, 0.25);
+          // Walk the ORIGINAL selection (not just the targets) so skipped
+          // kinds in a mixed selection stay selected afterwards — the user's
+          // selection must not visibly shrink just because they picked a
+          // weight. Rebuilt arrows are swapped in for their originals.
+          const reselect: FabricObject[] = [];
+          for (const object of activeObjects) {
+            const kind = (object as TaggedObject).data?.kind;
+            if (kind === 'rectangle') {
+              // Rectangles re-weight in place — strokeWidth is a plain
+              // Fabric prop. setCoords() refreshes aCoords so hit-testing
+              // tracks the new stroke-inclusive bounds.
+              object.set({ strokeWidth: weight * scale });
+              object.setCoords();
+              reselect.push(object);
+            } else if (kind === 'arrow') {
+              // Arrows CANNOT re-weight in place: the tapered shape is a
+              // single Polygon whose cross-axis widths are baked functions
+              // of the weight (see makeArrow). Rebuild from the original
+              // tail/tip so length and direction are preserved exactly.
+              const poly = object as Polygon;
+              // points[0] is the tail tip and points[3] the arrow tip in
+              // polygon-local space (see the points array in makeArrow).
+              // Local points are stored relative to the polygon's own bbox,
+              // so subtract pathOffset (the bbox center) to get
+              // center-origin coords, then push through the object's full
+              // transform matrix for the absolute scene position. This
+              // survives any drag / resize / rotate applied since creation.
+              const matrix = poly.calcTransformMatrix();
+              const toAbsolute = (pt: { x: number; y: number }) =>
+                util.transformPoint(
+                  new Point(pt.x - poly.pathOffset.x, pt.y - poly.pathOffset.y),
+                  matrix,
+                );
+              const tail = toAbsolute(poly.points[0]);
+              const tip = toAbsolute(poly.points[3]);
+              // Capture the stacking index BEFORE removing so the
+              // replacement slots back into the exact same Layer order —
+              // Annotations stack by draw order (CONTEXT.md) and a reweight
+              // must not silently promote an old arrow to the front.
+              const index = canvas.getObjects().indexOf(poly);
+              const replacement = makeArrow(
+                poly.fill as string,
+                scale,
+                weight,
+                tail.x,
+                tail.y,
+                tip.x,
+                tip.y,
+              );
+              // Carry over the interaction flags rather than assuming Select
+              // mode: keeps the replacement faithful to whatever state the
+              // original was in.
+              replacement.selectable = poly.selectable;
+              replacement.evented = poly.evented;
+              canvas.remove(poly);
+              canvas.add(replacement);
+              // add() appends at the top of the stack; move the replacement
+              // back down into the original's slot. (The original sat above
+              // index 0 among Annotations, so nothing below shifts when
+              // moveObjectTo pulls the replacement off the end.)
+              canvas.moveObjectTo(replacement, index);
+              reselect.push(replacement);
+            } else {
+              // Silently skipped kind — keep it in the re-selection,
+              // untouched.
+              reselect.push(object);
+            }
+          }
+          // Refit and snapshot BEFORE re-selecting. Both read each object's
+          // own left/top — fitCanvasToViewport via objectBoundsWithShadow,
+          // saveHistorySnapshot via serializeAll -> toObject — and those turn
+          // group-relative the instant an ActiveSelection wraps 2+ members
+          // again (Fabric shifts each member by -groupCenter). Acting now,
+          // while discardActiveObject left everything in absolute coords, is
+          // what keeps it correct: snapshotting after the re-selection would
+          // bake group-relative positions into history, and restoreHistory
+          // would later enliven them as absolute — jumping every object to the
+          // origin on undo/redo — while refitting after would union the
+          // selected objects' group-relative bounds with the unselected ones'
+          // absolute bounds and mis-frame the viewport. This is the same
+          // serialize-before-reselect ordering Skitch's reweightSelected uses.
+          //
+          // Unlike recolor, a reweight changes geometry: a thicker stroke grows
+          // the content bbox slightly (objectBoundsWithShadow adds strokeWidth /
+          // 2 per side for stroked annotations), so the refit keeps an
+          // edge-hugging rectangle's outer stroke from clipping.
+          fitCanvasToViewport();
+          // Re-weighting objects IS undoable — same serialize-compare-push
+          // block the recolorSelected path uses (saveHistorySnapshot). The
+          // weight SETTING itself never enters history; it's App-level
+          // session state, same as Active color.
+          saveHistorySnapshot();
+          // Restore the selection. Single object -> plain setActiveObject;
+          // multiple -> a fresh ActiveSelection (the discarded one may still
+          // reference removed arrow originals, so it can't be reused).
+          if (reselect.length === 1) {
+            canvas.setActiveObject(reselect[0]);
+          } else {
+            canvas.setActiveObject(new ActiveSelection(reselect, { canvas }));
+          }
+          canvas.requestRenderAll();
         },
         copyPng: async () => {
           await copyExport(

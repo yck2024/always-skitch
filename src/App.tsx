@@ -4,6 +4,7 @@ import { ShortcutsModal, type ShortcutRow } from './components/ShortcutsModal';
 import { Toolbar } from './components/Toolbar';
 import { TopNav } from './components/TopNav';
 import { DEFAULT_COLOR } from './palette';
+import { DEFAULT_WEIGHT } from './weights';
 import type { ToastMessage, Tool } from './types';
 import { fileToDataUrl, getImageFileFromPaste, readImageFromClipboard } from './utils/clipboard';
 
@@ -12,6 +13,8 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<Tool>('rectangle');
   const [activeColor, setActiveColor] = useState<string>(DEFAULT_COLOR);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [activeWeight, setActiveWeight] = useState<number>(DEFAULT_WEIGHT);
+  const [weightPickerOpen, setWeightPickerOpen] = useState(false);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [hasImage, setHasImage] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -24,8 +27,29 @@ export default function App() {
     editorRef.current?.recolorSelected(color);
   }, []);
 
+  const handleWeightChange = useCallback((weight: number) => {
+    setActiveWeight(weight);
+    editorRef.current?.reweightSelected(weight);
+  }, []);
+
+  // The two picker popovers sit side by side in the toolbar; opening one
+  // closes the other so they never stack visually or trap the Esc key twice.
+  const handleColorPickerOpenChange = useCallback((open: boolean) => {
+    setColorPickerOpen(open);
+    if (open) setWeightPickerOpen(false);
+  }, []);
+
+  const handleWeightPickerOpenChange = useCallback((open: boolean) => {
+    setWeightPickerOpen(open);
+    if (open) setColorPickerOpen(false);
+  }, []);
+
+  // Skitch rule (CONTEXT.md): pasting a new screenshot resets the pen —
+  // Active color back to red, Line weight back to Medium. Neither reset is
+  // part of undo history.
   useEffect(() => {
     setActiveColor(DEFAULT_COLOR);
+    setActiveWeight(DEFAULT_WEIGHT);
   }, [imageDataUrl]);
 
   const showToast = useCallback((text: string, tone: ToastMessage['tone'] = 'info') => {
@@ -98,6 +122,16 @@ export default function App() {
         }
         return;
       }
+      // Same suppression while the weight picker is open: Esc closes it,
+      // everything else is swallowed so picking a weight can't double as a
+      // tool switch.
+      if (weightPickerOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setWeightPickerOpen(false);
+        }
+        return;
+      }
       if (event.key === '?' && !isEditingText) {
         event.preventDefault();
         setShowShortcuts(true);
@@ -162,7 +196,7 @@ export default function App() {
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [loadImageFile, hasImage, showShortcuts, colorPickerOpen]);
+  }, [loadImageFile, hasImage, showShortcuts, colorPickerOpen, weightPickerOpen]);
 
   return (
     <div className="app">
@@ -171,13 +205,17 @@ export default function App() {
         activeTool={activeTool}
         activeColor={activeColor}
         colorPickerOpen={colorPickerOpen}
+        activeWeight={activeWeight}
+        weightPickerOpen={weightPickerOpen}
         canUndo={canUndo}
         canRedo={canRedo}
         hasImage={hasImage}
         onPaste={handlePasteButton}
         onToolChange={setActiveTool}
         onColorChange={handleColorChange}
-        onColorPickerOpenChange={setColorPickerOpen}
+        onColorPickerOpenChange={handleColorPickerOpenChange}
+        onWeightChange={handleWeightChange}
+        onWeightPickerOpenChange={handleWeightPickerOpenChange}
         onUndo={() => editorRef.current?.undo()}
         onRedo={() => editorRef.current?.redo()}
         onDelete={() => editorRef.current?.deleteSelected()}
@@ -193,6 +231,7 @@ export default function App() {
           imageDataUrl={imageDataUrl}
           activeTool={activeTool}
           activeColor={activeColor}
+          activeWeight={activeWeight}
           onToolChange={setActiveTool}
           onToast={showToast}
           onImageLoaded={setHasImage}

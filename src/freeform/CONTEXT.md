@@ -23,6 +23,10 @@ _Avoid_: callout (code/internal name only), marker, label, badge
 **Active color**:
 The pen color new **Annotations** are drawn in. Unlike Skitch, the **Active color** persists across pastes — pasting an **Image** never resets it.
 
+**Line weight**:
+The thickness line-drawn **Annotations** (rectangles and arrows) are drawn at — three fixed presets (Thin / Medium / Thick) picked from a toolbar popover. Behaves like **Active color**: it applies to new annotations, re-weights the currently selected annotation(s), and persists across pastes. A setting, not content — preserved by **Clear Annotations** and **Clear Canvas**. Text, **Steps**, and blur have no line weight.
+_Avoid_: stroke width, width (ambiguous with rectangle geometry), thickness (preset labels only), pen size
+
 **Canvas color**:
 The color of the **Canvas** itself — shows in empty space between **Images** and forms the background of the exported PNG. User picks one of four modes from the toolbar: **White** (default), **Black**, **Transparent**, or **Match**. Independent of the **Active color**; changing one does not affect the other.
 _Avoid_: backdrop, paper, fill
