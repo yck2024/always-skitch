@@ -73,14 +73,16 @@ Yes — this is a pure front-end app. `npm run build` produces static files in `
 
 ## Deploy to GitHub Pages
 
-The Vite production base is `/always-skitch/`, which matches this repository's GitHub Pages URL:
+The app is served from the root of its own custom domain, so the Vite production base is `/`. The address is recorded in `public/CNAME`, which ships into `dist/`:
 
 ```text
-https://yck2024.github.io/always-skitch/
+https://skitch.kengblog.com/
 ```
 
+The domain's DNS record is a `CNAME` pointing at `yck2024.github.io` (DNS only, not proxied), and the custom domain is set under **Settings → Pages**. The origin matters: browser storage (for example saved History) belongs to the site's origin, so keep the address stable.
+
 The recommended deployment is GitHub Actions. The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
-This app uses Vite with `base: './'`, so the built assets work from a repository subpath on GitHub Pages.
+This app uses Vite with `base: '/'` and is served from the root of `skitch.kengblog.com`.
 
 The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
 
@@ -88,7 +90,7 @@ The repository includes `.github/workflows/deploy-pages.yml`, which builds the s
 2. In GitHub, open **Settings → Pages**.
 3. Set **Build and deployment → Source** to **GitHub Actions**.
 4. Push to the `main` branch, or run the **Deploy static app to GitHub Pages** workflow manually from the Actions tab.
-5. Wait for the workflow to finish, then open `https://yck2024.github.io/always-skitch/`.
+5. Wait for the workflow to finish, then open `https://skitch.kengblog.com/`.
 
 ### If the GitHub Pages site is blank
 

@@ -29,12 +29,12 @@ function ghPagesSpaFallback(): PluginOption {
 }
 
 export default defineConfig({
-  // Absolute base matching the GH Pages repo path. Relative './' assets break
-  // trailing-slash deep links (e.g. /always-skitch/freeform/) because the SPA
-  // 404.html shim serves the same index.html at that path, then asset URLs
-  // resolve under /always-skitch/freeform/assets/ — a directory that does not
-  // exist. Hardcoding the repo path is the simplest correct fix.
-  base: '/always-skitch/',
+  // Absolute root base: the app is served from the root of its own custom
+  // domain (skitch.kengblog.com, see public/CNAME), not a repo subpath. Relative
+  // './' assets would break trailing-slash deep links (e.g. /freeform/) because
+  // the SPA 404.html shim serves the same index.html at that path, so asset URLs
+  // would resolve under /freeform/assets/ — a directory that does not exist.
+  base: '/',
   plugins: [
     react(),
     ghPagesSpaFallback(),

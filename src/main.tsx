@@ -5,12 +5,11 @@ import App from './App';
 import FreeformApp from './freeform/App';
 import './styles.css';
 
-// Vite is configured with base: './' for asset portability across GH Pages repo
-// paths, which means import.meta.env.BASE_URL is './' in production — not usable
-// as a router basename. Instead, derive the basename from the current URL by
-// stripping any known route suffix, leaving whatever path prefix GH Pages is
-// serving us from (e.g. '/always-skitch'). New top-level routes must be added
-// here so deep links survive the 404.html shim.
+// Vite is configured with an absolute base ('/'), and the app is served from the
+// root of its own domain, so the router basename is normally '/'. The basename is
+// still derived from the current URL by stripping any known route suffix, which
+// keeps deep links working through the 404.html shim and under any path prefix.
+// New top-level routes must be added here so deep links survive the shim.
 const KNOWN_ROUTE_SUFFIXES = ['/freeform'];
 
 function detectBasename(): string {
