@@ -37,6 +37,15 @@ const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-
 const FONT_SIZE = 32;
 const CALLOUT_SIZE = 42;
 const PIXEL_SIZE = 12;
+// Screen-pixel gutter around the Background (ADR-0013). Fabric can only draw
+// and hit-test controls inside its own <canvas> element, so without a gutter
+// the handles of an annotation at the image edge are cut off. 48 = the rotate
+// knob's 40px offset above the box + its ~7px radius, so even the knob of an
+// annotation flush with the top edge stays fully visible. Export crops it away.
+const CANVAS_MARGIN_PX = 48;
+// Screen pixels of an annotation that must stay over the Background when it is
+// moved or resized, so there is always something left to grab (ADR-0013).
+const MIN_VISIBLE_PX = 20;
 
 type HistoryState = string;
 
@@ -266,6 +275,42 @@ function makeCallout(color: string, scale: number, left: number, top: number, nu
   return group;
 }
 
+interface Bounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+// Shift `target` (one annotation or a multi-selection) by the smallest amount
+// that leaves at least `minVisible` scene units of EVERY annotation inside the
+// Background rect, never more than the annotation's own size. Clamps rather
+// than deletes. If the members cannot all satisfy the rule at once (a
+// selection spread wider than the image) it leaves the position alone.
+function keepOnImage(target: FabricObject, image: { width: number; height: number }, minVisible: number) {
+  const members = target instanceof ActiveSelection ? target.getObjects() : [target];
+  let minDx = -Infinity;
+  let maxDx = Infinity;
+  let minDy = -Infinity;
+  let maxDy = Infinity;
+  members.forEach((member) => {
+    member.setCoords();
+    const box: Bounds = member.getBoundingRect();
+    const visibleX = Math.min(minVisible, box.width);
+    const visibleY = Math.min(minVisible, box.height);
+    minDx = Math.max(minDx, visibleX - (box.left + box.width));
+    maxDx = Math.min(maxDx, image.width - visibleX - box.left);
+    minDy = Math.max(minDy, visibleY - (box.top + box.height));
+    maxDy = Math.min(maxDy, image.height - visibleY - box.top);
+  });
+  const dx = minDx <= maxDx ? Math.min(Math.max(0, minDx), maxDx) : 0;
+  const dy = minDy <= maxDy ? Math.min(Math.max(0, minDy), maxDy) : 0;
+  if (dx === 0 && dy === 0) return false;
+  target.set({ left: (target.left ?? 0) + dx, top: (target.top ?? 0) + dy });
+  target.setCoords();
+  return true;
+}
+
 function nextStepNumber(canvas: Canvas) {
   let max = 0;
   for (const object of canvas.getObjects()) {
@@ -336,10 +381,14 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const fallbackHeight = Math.max(1, window.innerHeight - 150);
     const maxWidth = rect && rect.width > 0 ? rect.width : fallbackWidth;
     const maxHeight = rect && rect.height > 0 ? rect.height : fallbackHeight;
-    const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+    // The element is the Background plus a CANVAS_MARGIN_PX gutter on every
+    // side (ADR-0013), so fit the Background into what is left after the gutter.
+    const gutter = CANVAS_MARGIN_PX * 2;
+    const scale = Math.min(Math.max(1, maxWidth - gutter) / naturalWidth, Math.max(1, maxHeight - gutter) / naturalHeight, 1);
     displayScaleRef.current = scale;
-    canvas.setDimensions({ width: naturalWidth * scale, height: naturalHeight * scale });
-    canvas.setZoom(scale);
+    canvas.setDimensions({ width: naturalWidth * scale + gutter, height: naturalHeight * scale + gutter });
+    // Zoom AND pan: scene (0,0), the Background's corner, sits at the margin.
+    canvas.setViewportTransform([scale, 0, 0, scale, CANVAS_MARGIN_PX, CANVAS_MARGIN_PX]);
     canvas.requestRenderAll();
   };
 
@@ -420,9 +469,37 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     type CanvasPointerEvent = Parameters<typeof canvas.getScenePoint>[0];
     const pointerFromEvent = (event: { e: CanvasPointerEvent }) => canvas.getScenePoint(event.e);
 
+    // New annotations anchor and end on the Background, never in the margin or
+    // beyond it (ADR-0013): a drag that overshoots the edge stops at the edge,
+    // which is also what the export shows, and a click in the gutter can't
+    // place an annotation that is entirely off the image.
+    const clampPointToImage = (point: Point) => {
+      const element = backgroundElementRef.current;
+      if (!element) return point;
+      return new Point(
+        Math.min(Math.max(point.x, 0), element.naturalWidth),
+        Math.min(Math.max(point.y, 0), element.naturalHeight),
+      );
+    };
+
+    // Keep every moved or resized annotation at least partly over the image
+    // (ADR-0013). Runs live while dragging, and again when the gesture ends so
+    // a resize that dragged the box off is pulled back before history records it.
+    const keepTargetOnImage = (event: { target?: FabricObject }) => {
+      const element = backgroundElementRef.current;
+      const target = event.target;
+      if (!element || !target) return;
+      keepOnImage(
+        target,
+        { width: element.naturalWidth, height: element.naturalHeight },
+        MIN_VISIBLE_PX / Math.max(displayScaleRef.current, 1e-6),
+      );
+    };
+
     const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
       if (!backgroundElementRef.current || activeToolRef.current === 'select') return;
-      const pointer = pointerFromEvent(event);
+      const rawPointer = pointerFromEvent(event);
+      const pointer = clampPointToImage(rawPointer);
 
       // If the click landed on an existing annotation, escape sticky mode:
       // switch to Select and pick the object up instead of stacking a new
@@ -432,7 +509,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       // only (ADR-0012), so a click in a Rectangle's empty inside falls
       // through to the active tool.
       const hit = annotationObjects(canvas).find((object) =>
-        annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX / displayScaleRef.current),
+        annotationContainsPoint(object, rawPointer, HIT_TOLERANCE_PX / displayScaleRef.current),
       );
       if (hit) {
         activeToolRef.current = 'select';
@@ -507,7 +584,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const handleMouseMove = (event: { e: CanvasPointerEvent }) => {
       const drawing = drawingRef.current;
       if (!drawing) return;
-      const pointer = pointerFromEvent(event);
+      const pointer = clampPointToImage(pointerFromEvent(event));
       if (drawing.kind === 'rectangle' || drawing.kind === 'blur') {
         drawing.object.set({
           left: Math.min(pointer.x, drawing.startX),
@@ -529,7 +606,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       const drawing = drawingRef.current;
       if (!drawing) return;
       drawingRef.current = null;
-      const pointer = pointerFromEvent(event);
+      const pointer = clampPointToImage(pointerFromEvent(event));
 
       if (drawing.kind === 'rectangle') {
         if ((drawing.object.width ?? 0) < 4 || (drawing.object.height ?? 0) < 4) {
@@ -562,7 +639,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
 
     const handleCanvasClick = (event: { e: CanvasPointerEvent }) => {
       if (!backgroundElementRef.current) return;
-      const pointer = pointerFromEvent(event);
+      const pointer = clampPointToImage(pointerFromEvent(event));
       const scale = annotationScale();
       const color = activeColorRef.current;
       if (activeToolRef.current === 'text') {
@@ -648,22 +725,26 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     });
     // ...and once more on release, which also covers Rectangles resized as part
     // of a multi-selection (their scale only becomes their own after the
-    // selection is dropped). Registered BEFORE saveHistory so the snapshot
-    // already holds the baked geometry.
+    // selection is dropped). Registered BEFORE the clamp and saveHistory so the
+    // snapshot already holds baked, clamped geometry.
     canvas.on('object:modified', (event) => {
       const target = event.target;
       if (target instanceof ActiveSelection) {
         const members = target.getObjects();
-        if (!members.some((object) => kindOf(object) === 'rectangle')) return;
-        canvas.discardActiveObject();
-        members.forEach((object) => {
-          if (kindOf(object) === 'rectangle') bakeRectangleScale(object);
-        });
-        canvas.setActiveObject(new ActiveSelection(members, { canvas }));
+        if (members.some((object) => kindOf(object) === 'rectangle')) {
+          canvas.discardActiveObject();
+          members.forEach((object) => {
+            if (kindOf(object) === 'rectangle') bakeRectangleScale(object);
+          });
+          canvas.setActiveObject(new ActiveSelection(members, { canvas }));
+        }
       } else if (kindOf(target) === 'rectangle') {
         bakeRectangleScale(target);
       }
     });
+    canvas.on('object:moving', keepTargetOnImage);
+    // Registered before saveHistory so the recorded state is the clamped one.
+    canvas.on('object:modified', keepTargetOnImage);
     canvas.on('object:modified', saveHistory);
     canvas.on('text:changed', saveHistory);
     const syncStepHandles = () => hideStepSideHandles(canvas);
@@ -743,8 +824,23 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     // Invert the fit-to-viewport scale so the exported PNG keeps the source image's natural resolution.
-    const multiplier = displayScaleRef.current > 0 ? 1 / displayScaleRef.current : 1;
-    return canvas.toDataURL({ format: 'png', multiplier });
+    const scale = displayScaleRef.current > 0 ? displayScaleRef.current : 1;
+    const element = backgroundElementRef.current;
+    if (!element) return null;
+    // Crop to the Background alone: the margin gutter (ADR-0013) and anything
+    // an annotation hangs over the edge never reach the PNG. The crop is half
+    // a source pixel taller/wider than the image because Fabric truncates the
+    // output size, and width * scale * (1 / scale) can land a hair under the
+    // integer (a 2400px image exported as 2399px); the half pixel absorbs
+    // that so the PNG is always exactly the Background's size.
+    return canvas.toDataURL({
+      format: 'png',
+      multiplier: 1 / scale,
+      left: CANVAS_MARGIN_PX,
+      top: CANVAS_MARGIN_PX,
+      width: (element.naturalWidth + 0.5) * scale,
+      height: (element.naturalHeight + 0.5) * scale,
+    });
   };
 
   useImperativeHandle(ref, () => ({
@@ -873,7 +969,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
           <p>Use Cmd+V or click Paste Image</p>
         </div>
       ) : null}
-      <div className={imageDataUrl ? 'canvas-wrap visible' : 'canvas-wrap'}>
+      <div className={imageDataUrl ? 'canvas-wrap visible skitch-wrap' : 'canvas-wrap'}>
         <canvas ref={canvasElRef} />
       </div>
     </section>

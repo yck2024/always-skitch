@@ -42,6 +42,8 @@ Standard editing shortcuts still work:
 
 While a drawing tool is sticky (Rectangle, Arrow, Blur, Text, Step), clicking on an existing annotation auto-switches to Select and picks it up instead of creating a new annotation on top. A Rectangle counts as clicked only on its border and an Arrow only on its drawn line, so clicking inside a Rectangle's empty inside starts the current tool there (for example, typing text inside a box); Blur boxes and Steps are picked up anywhere on them. With the Select tool, clicking inside a Rectangle still selects it.
 
+The screenshot sits inside a small grey margin so the handles of an annotation at the image edge stay visible and usable. Annotations can overhang the image edge, but they can't be dragged or resized fully off it: at least a small part always stays on the image so there is still something to grab. New annotations start and end on the image, so a drag that overshoots the edge stops at the edge. The exported PNG is exactly the screenshot's size and content; the margin and anything hanging past the edge are not included.
+
 ## Run locally
 
 ```bash
