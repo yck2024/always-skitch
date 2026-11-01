@@ -369,7 +369,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       // only (ADR-0012), so a click in a Rectangle's empty inside falls
       // through to the active tool.
       const hit = annotationObjects(canvas).find((object) =>
-        annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX * annotationScale()),
+        annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX / displayScaleRef.current),
       );
       if (hit) {
         activeToolRef.current = 'select';

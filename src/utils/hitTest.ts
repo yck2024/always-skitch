@@ -2,7 +2,7 @@ import { util, type FabricObject, type Point, type Polygon, type Rect } from 'fa
 
 // Screen-pixel slop added around a Rectangle's border or an Arrow's drawn
 // shape when deciding whether a sticky-tool click landed "on" it (ADR-0012).
-// Callers convert to scene units by multiplying by their annotationScale().
+// Callers convert to scene units using the actual canvas display scale.
 export const HIT_TOLERANCE_PX = 6;
 
 type Pt = { x: number; y: number };
@@ -72,7 +72,7 @@ function hitsArrowShape(arrow: Polygon, pointer: Pt, tolerance: number): boolean
 // Sticky-tool "did this click land on an existing annotation" test (ADR-0012).
 // Hollow Rectangles and diagonal Arrows are matched on their drawn geometry
 // only; every other kind keeps the bounding-box test because it looks solid.
-// `tolerance` is in scene units (HIT_TOLERANCE_PX * annotationScale()).
+// `tolerance` is in scene units (HIT_TOLERANCE_PX / displayScale).
 export function annotationContainsPoint(object: FabricObject, pointer: Point, tolerance: number): boolean {
   switch (kindOf(object)) {
     case 'rectangle':

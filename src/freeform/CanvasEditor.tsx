@@ -1048,7 +1048,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // Images. Clicking an Image while a drawing tool is active starts a
         // new drawing on top (per principle 5 of the integration brief).
         const hit = annotationObjects(canvas).find((object) =>
-          annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX * annotationScale()),
+          annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX / displayScaleRef.current),
         );
         if (hit) {
           activeToolRef.current = 'select';
