@@ -133,6 +133,16 @@ function annotationObjects(canvas: Canvas) {
 // Snapshots are always taken in absolute coordinates, even while an
 // ActiveSelection is live (group move/resize/rotate via object:modified, or a
 // recolor of a multi-selection) — see toAbsoluteObject.
+
+// The Text annotation currently in edit mode, if any. Fabric's
+// textEditingManager keeps at most one IText editing per canvas. Iterate the
+// objects rather than read getActiveObject(): a text created under the sticky
+// Text tool is not the active object while it is edited (ADR-0008).
+function findEditingText(canvas: Canvas): Textbox | undefined {
+  return canvas.getObjects().find(
+    (object) => (object as FabricObject & { data?: { kind?: string } }).data?.kind === 'text' && (object as Textbox).isEditing,
+  ) as Textbox | undefined;
+}
 function serializeAnnotations(canvas: Canvas): HistoryState {
   return JSON.stringify(annotationObjects(canvas).map((object) => toAbsoluteObject(object, ['data'])));
 }
@@ -389,6 +399,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   // Queue rapid Undo/Redo so restores run one at a time and in press order.
   const restoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const displayScaleRef = useRef(1);
+  // Per-gesture state, set on mouse:down:before and read on mouse:up. The
+  // tool at press time keeps a click-place tool picked mid-drag (S / T) from
+  // also placing a Step or Text on release (#43); the dismissal flag marks a
+  // press that only ended text editing (ADR-0008), so the release is ignored.
+  const pressToolRef = useRef<Tool | null>(null);
+  const dismissGestureRef = useRef(false);
 
   const fitCanvasToViewport = () => {
     const canvas = canvasRef.current;
@@ -523,10 +539,40 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       );
     };
 
+    // ADR-0008: while a text is being edited, the next canvas press belongs to
+    // it. This runs on mouse:down:before, ahead of Fabric's own target search
+    // and selection, and ahead of handleMouseDown's sticky-tool escape.
+    const handleMouseDownBefore = (event: { e: CanvasPointerEvent }) => {
+      pressToolRef.current = activeToolRef.current;
+      dismissGestureRef.current = false;
+      const editingText = findEditingText(canvas);
+      if (!editingText) return;
+      if (editingText.containsPoint(pointerFromEvent(event))) {
+        // Click inside: let IText place the caret or drag-select. Fabric only
+        // does that for the active object; a text created under the sticky
+        // Text tool is not one, so make it active here (it is already
+        // evented — see handleTextEditingEntered).
+        if (canvas.getActiveObject() !== editingText) canvas.setActiveObject(editingText);
+        return;
+      }
+      // Click outside: finish typing. Under a drawing tool the press is
+      // consumed — the editing:exited listener switches the tool to Select,
+      // and nothing beneath the click is selected or drawn (#35).
+      editingText.exitEditing();
+      canvas.requestRenderAll();
+      if (pressToolRef.current !== 'select') dismissGestureRef.current = true;
+    };
+
     const handleMouseDown = (event: { e: CanvasPointerEvent }) => {
+      if (dismissGestureRef.current) return;
       if (!backgroundElementRef.current || activeToolRef.current === 'select') return;
       const rawPointer = pointerFromEvent(event);
       const pointer = clampPointToImage(rawPointer);
+
+      // A press inside the text being edited moves its caret (see
+      // handleMouseDownBefore); it must not hit the sticky-tool escape below,
+      // which would flip the tool to Select mid-edit (#46).
+      if (findEditingText(canvas)?.containsPoint(pointer)) return;
 
       // If the click landed on an existing annotation, escape sticky mode:
       // switch to Select and pick the object up instead of stacking a new
@@ -629,10 +675,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       canvas.requestRenderAll();
     };
 
-    const handleMouseUp = async (event: { e: CanvasPointerEvent }) => {
-      const drawing = drawingRef.current;
-      if (!drawing) return;
-      drawingRef.current = null;
+    const finishDrawing = async (drawing: DrawingState, event: { e: CanvasPointerEvent }) => {
       const pointer = clampPointToImage(pointerFromEvent(event));
 
       if (drawing.kind === 'rectangle') {
@@ -670,40 +713,17 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       const scale = annotationScale();
       const color = activeColorRef.current;
       if (activeToolRef.current === 'text') {
-        // ADR-0008: dismissal interception. Fabric only auto-exits the old
-        // editing text when a NEW IText calls enterEditing() — see
-        // node_modules/fabric/dist/index.mjs (enterEditingImpl, ~16878).
-        // So a click outside an editing text reaches us here BEFORE Fabric
-        // has exited it; if we naively create, we spawn a redundant text
-        // box and only THEN does Fabric exit the old one. Catch the
-        // dismissal: if any text is currently in editing mode, exit it
-        // and consume the click. The editing:exited listener (registered
-        // when that text was created) handles the tool switch to Select.
-        // We deliberately do NOT forward the click to Select-tool
-        // semantics — the user's intent is "finish typing", not "select
-        // whatever was beneath my click".
-        //
-        // Why iterate canvas.getObjects() instead of calling
-        // canvas.getActiveObject(): addFinalObject above sets
-        // `evented = false` on any object created while a sticky drawing
-        // tool is active (Text included), and Fabric's
-        // IText.enterEditing() (node_modules/fabric/dist/index.mjs:16859)
-        // does NOT call setActiveObject. So the freshly-created editing
-        // text is NOT the canvas's active object — getActiveObject()
-        // returns null or an unrelated object the user happened to
-        // click. Iterate explicitly to find it. Fabric's
-        // textEditingManager guarantees at most one IText is in editing
-        // state at any time, so the .find is the right shape.
-        //
-        // Why containsPoint instead of event.target identity: Fabric
-        // does NOT report non-evented objects as mouse:up event targets,
-        // so `event.target === editingText` is unreliable here. A
-        // bounding-box hit-test against the scene pointer is the
-        // correct way to ask "did the click land inside the text?". If
-        // it did, let IText's hidden textarea handle cursor positioning.
-        const editingText = canvas.getObjects().find(
-          (obj) => (obj as FabricObject & { data?: { kind?: string } }).data?.kind === 'text' && (obj as Textbox).isEditing
-        ) as Textbox | undefined;
+        // ADR-0008: dismissal guard. Fabric only auto-exits the old editing
+        // text when a NEW IText calls enterEditing() (enterEditingImpl in
+        // node_modules/fabric/dist/index.mjs), so creating here while a text
+        // is editing would spawn a redundant box. handleMouseDownBefore
+        // already ended editing for a press outside the text and consumed
+        // the gesture; this guard covers what still reaches us — a click
+        // inside the editing text (IText moves the caret) and the
+        // mouse:dblclick route — so no second text is ever created.
+        // containsPoint, not event.target identity: Fabric does not report
+        // non-evented objects as event targets.
+        const editingText = findEditingText(canvas);
         if (editingText) {
           if (editingText.containsPoint(pointer)) {
             return;
@@ -720,12 +740,13 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         addFinalObject(text);
         text.enterEditing();
         text.selectAll();
-        // ADR-0008: when editing exits via Esc, Tab, or any non-click path
-        // (programmatic blur), snap back to Select so the gesture that
-        // finished typing doesn't leave Text armed. The click-outside
-        // dismissal path is handled above at mouse:up; this listener
-        // covers the remaining exit routes. `once` self-detaches so
-        // re-editing the same Textbox later doesn't reapply the snap.
+        // ADR-0008: however editing exits (Esc, a click on or off the
+        // canvas, the toolbar), snap back to Select so the gesture that
+        // finished typing doesn't leave Text armed. This object-level event
+        // fires before the canvas-level text:editing:exited, so
+        // handleTextEditingExited already sees the Select tool. `once`
+        // self-detaches so re-editing the same Textbox later doesn't
+        // reapply the snap.
         // The synchronous ref write is defensive against any event
         // ordering where a follow-up mouse handler reads activeToolRef
         // before React's setState flush.
@@ -738,15 +759,78 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       }
     };
 
+    // One mouse:up for the whole gesture: a drag finalizes its drawing and
+    // stops there; only a press that started under a click-place tool (Text,
+    // Step) and still has it places an object. Reading just the current tool
+    // let S or T pressed mid-drag add a Step or Text at the release (#43).
+    const handleMouseUp = (event: { e: CanvasPointerEvent }) => {
+      const pressTool = pressToolRef.current;
+      pressToolRef.current = null;
+      if (dismissGestureRef.current) {
+        dismissGestureRef.current = false;
+        return;
+      }
+      const drawing = drawingRef.current;
+      if (drawing) {
+        drawingRef.current = null;
+        void finishDrawing(drawing, event);
+        return;
+      }
+      const tool = activeToolRef.current;
+      if ((tool === 'text' || tool === 'callout') && pressTool === tool) {
+        handleCanvasClick(event);
+      }
+    };
+
+    // Fabric picks the press target before mouse:down:before fires, so a text
+    // must already be evented for a click inside it to reach IText (caret
+    // placement, drag-select). A text created under the sticky Text tool is
+    // not; make any text evented for as long as it is being edited.
+    const handleTextEditingEntered = ({ target }: { target: FabricObject }) => {
+      target.evented = true;
+    };
+
+    // Runs after every exit from text editing, however it ended (Esc, a click
+    // on the canvas or outside it, the toolbar, re-editing another text).
+    // Fabric's exitEditing() restores the selectable flag saved when editing
+    // began — false for a text created under the sticky Text tool — so when
+    // the tool was already Select before the exit, nothing else would make
+    // the text selectable again (#46). Re-sync it with the current tool; the
+    // per-text editing:exited listener has already switched to Select for a
+    // fresh text. An emptied text is removed instead of lingering as an
+    // invisible box that grabs later clicks (#36).
+    const handleTextEditingExited = ({ target }: { target: FabricObject }) => {
+      if (!canvas.contains(target)) return;
+      if (((target as Textbox).text ?? '').trim() === '') {
+        canvas.remove(target);
+        canvas.requestRenderAll();
+        saveHistory();
+        return;
+      }
+      const isSelect = activeToolRef.current === 'select';
+      target.selectable = isSelect;
+      target.evented = isSelect;
+      if (!isSelect && canvas.getActiveObject() === target) canvas.discardActiveObject();
+      canvas.requestRenderAll();
+    };
+
+    // A press outside the canvas (page margin, toolbar) ends editing. Fabric's
+    // hidden-textarea blur only stops the caret blink, which left the text in
+    // edit mode with the Text tool still armed.
+    const handleDocumentPointerDown = (event: PointerEvent) => {
+      const editingText = findEditingText(canvas);
+      if (!editingText) return;
+      const target = event.target as Node | null;
+      if (target && (canvas.upperCanvasEl.contains(target) || target === editingText.hiddenTextarea)) return;
+      editingText.exitEditing();
+      canvas.requestRenderAll();
+    };
+
+    canvas.on('mouse:down:before', handleMouseDownBefore);
     canvas.on('mouse:down', handleMouseDown);
     canvas.on('mouse:move', handleMouseMove);
     canvas.on('mouse:up', handleMouseUp);
     canvas.on('mouse:dblclick', handleCanvasClick);
-    canvas.on('mouse:up', (event) => {
-      if (activeToolRef.current === 'text' || activeToolRef.current === 'callout') {
-        handleCanvasClick(event);
-      }
-    });
     // Resize hooks (#38, #41). Live, so the stroke never looks stretched and
     // a Step never looks like an oval while the handle is being dragged...
     canvas.on('object:scaling', (event) => {
@@ -777,12 +861,21 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     // Registered before saveHistory so the recorded state is the clamped one.
     canvas.on('object:modified', keepTargetOnImage);
     canvas.on('object:modified', saveHistory);
-    canvas.on('text:changed', saveHistory);
+    // An emptied text is not snapshotted: it is removed when editing ends
+    // (#36), and an empty-text state in history would let Undo bring back the
+    // invisible box.
+    canvas.on('text:changed', ({ target }) => {
+      if ((target.text ?? '').trim() !== '') saveHistory();
+    });
+    canvas.on('text:editing:entered', handleTextEditingEntered);
+    canvas.on('text:editing:exited', handleTextEditingExited);
+    document.addEventListener('pointerdown', handleDocumentPointerDown, true);
     const syncStepHandles = () => hideStepSideHandles(canvas);
     canvas.on('selection:created', syncStepHandles);
     canvas.on('selection:updated', syncStepHandles);
 
     return () => {
+      document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
       canvas.dispose();
       canvasRef.current = null;
     };
