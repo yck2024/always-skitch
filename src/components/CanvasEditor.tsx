@@ -257,16 +257,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
   // `restoringRef` suppresses saveHistory while a restore is mutating the
-  // canvas. Only the most recent restore clears it, so a stale one bailing
-  // out never reopens the gate under a newer restore still in flight.
+  // canvas.
   const restoringRef = useRef(false);
-  // Rapid Undo/Redo (fast key-repeat) can start a new restore while an older
-  // one is still awaiting util.enlivenObjects. Ported from Freeform: undo and
-  // redo queue their restores so they run one at a time, and each restore
-  // captures a sequence number and bails after its await if a newer restore
-  // has started. Without both, overlapping restores each add their objects
-  // and the next save persists the duplicates.
-  const restoreSeqRef = useRef(0);
+  // Queue rapid Undo/Redo so restores run one at a time and in press order.
   const restoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const displayScaleRef = useRef(1);
 
@@ -639,14 +632,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const canvas = canvasRef.current;
     if (!canvas) return;
     restoringRef.current = true;
-    restoreSeqRef.current += 1;
-    const mySeq = restoreSeqRef.current;
     annotationObjects(canvas).forEach((object) => canvas.remove(object));
     const parsed = JSON.parse(state) as Record<string, unknown>[];
     const objects = await util.enlivenObjects(parsed);
-    // A newer restore started while we awaited: it owns the final state, so
-    // add nothing and leave restoringRef set for it to clear.
-    if (mySeq !== restoreSeqRef.current) return;
     objects.forEach((object) => canvas.add(object as FabricObject));
     canvas.discardActiveObject();
     canvas.requestRenderAll();
