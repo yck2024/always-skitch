@@ -1,5 +1,7 @@
 # Mini Skitch-like Annotator
 
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/kengblog)
+
 Mini Skitch is a static, browser-only image annotation app for quick screenshot markups. It is inspired by the classic thick red annotation style of old screenshot tools, but it does not use Skitch or Evernote branding and it does not capture screenshots itself.
 
 ## What it does
