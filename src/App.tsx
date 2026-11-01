@@ -137,7 +137,10 @@ export default function App() {
         setShowShortcuts(true);
         return;
       }
-      if (meta && key === 'z') {
+      // While typing, Cmd/Ctrl+Z belongs to the text box (as in Freeform):
+      // a canvas undo here replaced the editing text with a non-editing copy
+      // and later keystrokes went to an orphaned textarea (#40).
+      if (meta && key === 'z' && !isEditingText) {
         event.preventDefault();
         if (event.shiftKey) {
           editorRef.current?.redo();
