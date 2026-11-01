@@ -22,6 +22,7 @@ import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
 import { toAbsoluteObject } from '../utils/absoluteTransform';
+import { fitTextWidthToContent, rememberResizedTextWrapWidth } from '../utils/textWidth';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
 // (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
@@ -242,10 +243,11 @@ function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: 
 }
 
 function makeText(color: string, scale: number, left: number, top: number) {
+  const width = 260 * scale;
   return new Textbox('Text', {
     left,
     top,
-    width: 260 * scale,
+    width,
     fill: color,
     stroke: '#ffffff',
     strokeWidth: 2.5 * scale,
@@ -255,7 +257,9 @@ function makeText(color: string, scale: number, left: number, top: number) {
     fontSize: FONT_SIZE * scale,
     fontWeight: 900,
     editable: true,
-    data: { kind: 'text' },
+    // wrapWidth: the width the box narrows back to once a long word is split
+    // (utils/textWidth).
+    data: { kind: 'text', wrapWidth: width },
   });
 }
 
@@ -860,11 +864,14 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     canvas.on('object:moving', keepTargetOnImage);
     // Registered before saveHistory so the recorded state is the clamped one.
     canvas.on('object:modified', keepTargetOnImage);
+    canvas.on('object:modified', rememberResizedTextWrapWidth);
     canvas.on('object:modified', saveHistory);
-    // An emptied text is not snapshotted: it is removed when editing ends
-    // (#36), and an empty-text state in history would let Undo bring back the
-    // invisible box.
+    // A line break can shorten a Text's longest word; narrow the box to match
+    // before the snapshot records it (utils/textWidth). An emptied text is not
+    // snapshotted: it is removed when editing ends (#36), and an empty-text
+    // state in history would let Undo bring back the invisible box.
     canvas.on('text:changed', ({ target }) => {
+      if (fitTextWidthToContent(target)) canvas.requestRenderAll();
       if ((target.text ?? '').trim() !== '') saveHistory();
     });
     canvas.on('text:editing:entered', handleTextEditingEntered);
