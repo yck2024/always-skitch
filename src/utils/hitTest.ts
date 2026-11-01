@@ -69,6 +69,36 @@ function hitsArrowShape(arrow: Polygon, pointer: Pt, tolerance: number): boolean
   return points.some((pt, i) => distanceToSegment(pointer, pt, points[(i + 1) % points.length]) <= tolerance);
 }
 
+// Slack, in scene units, so a click exactly on an edge still counts as inside.
+// Far smaller than a pixel and far larger than float noise (~1e-13 at the
+// coordinates this app uses).
+const BOX_EPSILON = 1e-6;
+
+// Whole-box test: is the pointer inside the object's oriented bounding box
+// (the quad Fabric draws its selection frame on)? Used instead of
+// `object.containsPoint`, whose ray-cast aims at exactly the box's minX and
+// so reports a point a hair above the top-left corner as inside, however far
+// to the right it is (issue #45). Here the point is moved into the object's
+// local space and compared with the box's half-size, which holds for any
+// position, scale, rotation or skew. Edges are inclusive within BOX_EPSILON.
+function hitsBoundingBox(object: FabricObject, pointer: Pt): boolean {
+  const local = util.transformPoint(pointer, util.invertTransform(object.calcTransformMatrix()));
+  // Fabric's local box is the object's own width/height plus the stroke. With
+  // strokeUniform the stroke is not scaled, so convert its screen thickness
+  // back to local units.
+  const stroke = object.strokeWidth ?? 0;
+  const scaling = object.getObjectScaling();
+  const scaleX = Math.max(Math.abs(scaling.x), 1e-6);
+  const scaleY = Math.max(Math.abs(scaling.y), 1e-6);
+  const strokeX = object.strokeUniform ? stroke / scaleX : stroke;
+  const strokeY = object.strokeUniform ? stroke / scaleY : stroke;
+  const halfW = ((object.width ?? 0) + strokeX) / 2;
+  const halfH = ((object.height ?? 0) + strokeY) / 2;
+  return (
+    Math.abs(local.x) <= halfW + BOX_EPSILON / scaleX && Math.abs(local.y) <= halfH + BOX_EPSILON / scaleY
+  );
+}
+
 // Sticky-tool "did this click land on an existing annotation" test (ADR-0012).
 // Hollow Rectangles and diagonal Arrows are matched on their drawn geometry
 // only; every other kind keeps the bounding-box test because it looks solid.
@@ -80,6 +110,6 @@ export function annotationContainsPoint(object: FabricObject, pointer: Point, to
     case 'arrow':
       return hitsArrowShape(object as Polygon, pointer, tolerance);
     default:
-      return object.containsPoint(pointer);
+      return hitsBoundingBox(object, pointer);
   }
 }
