@@ -548,9 +548,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       const editingText = findEditingText(canvas);
       if (!editingText) return;
       if (editingText.containsPoint(pointerFromEvent(event))) {
+        // Click inside: let IText place the caret or drag-select. Fabric only
+        // does that for the active object; a text created under the sticky
+        // Text tool is not one, so make it active here (it is already
+        // evented — see handleTextEditingEntered).
         if (canvas.getActiveObject() !== editingText) canvas.setActiveObject(editingText);
         return;
       }
+      // Click outside: finish typing. Under a drawing tool the press is
+      // consumed — the editing:exited listener switches the tool to Select,
+      // and nothing beneath the click is selected or drawn (#35).
       editingText.exitEditing();
       canvas.requestRenderAll();
       if (pressToolRef.current !== 'select') dismissGestureRef.current = true;
