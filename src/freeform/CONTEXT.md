@@ -13,7 +13,7 @@ A pasted screenshot on the **Canvas**. Draggable, resizable, deletable. A **Canv
 _Avoid_: photo, picture, tile, card, panel, background
 
 **Annotation**:
-A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Lives in canvas coordinates, never bound to an **Image**.
+A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Lives in canvas coordinates, never bound to an **Image** — except a blur, which belongs to the **Image** it was drawn on (ADR-0014).
 _Avoid_: shape, marker
 
 **Step**:
@@ -56,6 +56,7 @@ _Avoid_: reset, new canvas, empty, wipe, start over
 - A **Canvas** hosts zero or more **Images** and zero or more **Annotations**.
 - **Images** and **Annotations** are siblings on the **Canvas** — no parent-child relationship between them.
 - An **Annotation** does NOT move when an **Image** moves. To move them together, the user group-selects first.
+- Exception: a blur moves, resizes, and rotates with the **Image** it was drawn on, so it keeps hiding the same pixels, and it is deleted with that **Image** (ADR-0014).
 - **Annotations** always render on top of all **Images**. The user has no operation that puts an **Image** above an **Annotation**.
 - Among **Annotations**, **Layer order** follows draw order — newer in front of older. There are no per-Annotation reorder controls in MVP.
 - Among **Images**, **Layer order** is user-controlled via **Bring to Front** / **Send to Back**. A freshly pasted **Image** lands at the top of the Image stack by default (still below all Annotations).
@@ -65,6 +66,8 @@ _Avoid_: reset, new canvas, empty, wipe, start over
 
 > **Dev:** "If I drag an Image, do the arrows I drew on top of it follow?"
 > **PM:** "No. Annotations live in Canvas coordinates. If the user wants them to move together, they group-select first."
+> **Dev:** "Even a blur?"
+> **PM:** "A blur is the one exception. It follows the Image it was drawn on, so moving or resizing a screenshot never uncovers what it hid."
 > **Dev:** "What if I paste a new Image — does it land on top of my existing Annotations?"
 > **PM:** "No. Annotations always render on top of all Images. Pasting another Image can never cover your annotations."
 > **Dev:** "What about another Image — can a new paste cover an older Image?"

@@ -13,3 +13,7 @@ In the Freeform context, **Annotations** (arrows, rectangles, text, callouts, bl
 - Cross-image arrows ("this state → that state") are a natural first-class operation, supporting flow/sequence use cases without special code.
 - Annotation serialization stays a flat list of canvas-coordinate objects, identical in shape to Skitch's existing history model.
 - Blur is an exception in *creation* only (must be drawn on an **Image** — see [0005](./0005-blur-per-image-only.md)); the resulting Blur annotation still lives in canvas coordinates like everything else.
+
+## Update — Blur amended by ADR-0014
+
+For Blur only, the canvas-level rule above is amended by [ADR-0014](./0014-blur-follows-its-image.md). A Blur now belongs to the **Image** it was drawn on and moves, resizes, and rotates with it, because a Blur left behind shows the content it was hiding. Every other **Annotation** still lives in **Canvas** coordinates and stays put when an **Image** moves.
