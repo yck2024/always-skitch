@@ -13,3 +13,5 @@ In Freeform, the Blur tool can only be used on top of an **Image**. Hovering emp
 - Blur's purpose — redacting information that exists in a screenshot — stays semantically obvious. Empty **Canvas** has nothing to redact.
 - Cross-image redaction requires two blur strokes. Acceptable given the rarity.
 - Implementation reuses Skitch's existing `createPixelatedCrop` almost verbatim — just plumbed to "the **Image** under the cursor" instead of "the singular **Background**."
+
+Blur attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).

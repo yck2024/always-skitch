@@ -13,7 +13,7 @@ A pasted screenshot on the **Canvas**. Draggable, resizable, deletable. A **Canv
 _Avoid_: photo, picture, tile, card, panel, background
 
 **Annotation**:
-A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Lives in canvas coordinates, never bound to an **Image**.
+A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Blur attachment is the exception (ADR-0014).
 _Avoid_: shape, marker
 
 **Step**:
@@ -54,8 +54,7 @@ _Avoid_: reset, new canvas, empty, wipe, start over
 ## Relationships
 
 - A **Canvas** hosts zero or more **Images** and zero or more **Annotations**.
-- **Images** and **Annotations** are siblings on the **Canvas** — no parent-child relationship between them.
-- An **Annotation** does NOT move when an **Image** moves. To move them together, the user group-selects first.
+- **Images** and **Annotations** are generally siblings on the **Canvas**; Blur attachment is the exception defined by [ADR-0014](./docs/adr/0014-blur-follows-its-image.md).
 - **Annotations** always render on top of all **Images**. The user has no operation that puts an **Image** above an **Annotation**.
 - Among **Annotations**, **Layer order** follows draw order — newer in front of older. There are no per-Annotation reorder controls in MVP.
 - Among **Images**, **Layer order** is user-controlled via **Bring to Front** / **Send to Back**. A freshly pasted **Image** lands at the top of the Image stack by default (still below all Annotations).

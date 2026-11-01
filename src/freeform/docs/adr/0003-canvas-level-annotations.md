@@ -1,6 +1,6 @@
-# 0003 Annotations in Freeform are canvas-level, never image-attached
+# 0003 Freeform Annotations are canvas-level, except Blur
 
-In the Freeform context, **Annotations** (arrows, rectangles, text, callouts, blurs) live in **Canvas** coordinates and are never bound to a specific **Image**. Moving an **Image** does not move the annotations drawn on top of it. Annotations can freely cross **Image** boundaries — an arrow that starts inside Image A and ends inside Image B is a single canvas-level arrow, owned by neither.
+In the Freeform context, non-Blur **Annotations** (arrows, rectangles, text, callouts) live in **Canvas** coordinates and are never bound to a specific **Image**. Moving an **Image** does not move them. They can freely cross **Image** boundaries — an arrow that starts inside Image A and ends inside Image B is a single canvas-level arrow, owned by neither. Blur was originally included in this rule; [ADR-0014](./0014-blur-follows-its-image.md) amends it for privacy.
 
 ## Considered options
 
@@ -9,7 +9,7 @@ In the Freeform context, **Annotations** (arrows, rectangles, text, callouts, bl
 
 ## Consequences
 
-- Group-select-and-drag is the only way to move an **Image** with its **Annotations** together; users must learn this gesture.
+- Group-select-and-drag is the way to move an **Image** with its non-Blur **Annotations** together; users must learn this gesture. Blur attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).
 - Cross-image arrows ("this state → that state") are a natural first-class operation, supporting flow/sequence use cases without special code.
 - Annotation serialization stays a flat list of canvas-coordinate objects, identical in shape to Skitch's existing history model.
-- Blur is an exception in *creation* only (must be drawn on an **Image** — see [0005](./0005-blur-per-image-only.md)); the resulting Blur annotation still lives in canvas coordinates like everything else.
+- Blur's creation and image-bound clipping rules are in [ADR-0005](./0005-blur-per-image-only.md); its attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).

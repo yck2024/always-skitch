@@ -297,7 +297,15 @@ export interface FreeformCanvasEditorHandle {
 // (selection, deletion, recolor) can discriminate Image vs Annotation. Image is
 // the only non-annotation kind today; anything else with a `data.kind` set is
 // an Annotation by elimination.
-type TaggedObject = FabricObject & { data?: { kind?: string } };
+//
+// ADR-0014 adds two link fields: every Image carries a stable `id`, and every
+// Blur carries the `imageId` of the Image it was drawn on plus the `crop` it
+// pixelated, in that Image's natural pixels. Both live in `data`, so they
+// round-trip through history snapshots with no extra plumbing.
+type BlurCrop = { x: number; y: number; width: number; height: number };
+type TaggedObject = FabricObject & {
+  data?: { kind?: string; id?: string; imageId?: string; crop?: BlurCrop };
+};
 
 // A Rectangle's stroke must stay at its Line weight when the Rectangle is
 // resized. Fabric resizes by scaling, which stretches the stroke unevenly and
@@ -386,6 +394,91 @@ function clampImageScaleToOrigin(
 
 function imageObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind === 'image');
+}
+
+// ADR-0014 Image ids. Only uniqueness within one Canvas session matters (the
+// history lives in memory), so a counter plus a time stamp is enough.
+let imageIdCounter = 0;
+function newImageId(): string {
+  imageIdCounter += 1;
+  return `image-${Date.now().toString(36)}-${imageIdCounter}`;
+}
+
+function imageById(canvas: Canvas, id: string | undefined): FabricImage | undefined {
+  if (!id) return undefined;
+  return canvas
+    .getObjects()
+    .find((object) => isImageObject(object) && (object as TaggedObject).data?.id === id) as FabricImage | undefined;
+}
+
+// Blurs linked to an Image (ADR-0014). Every Blur drawn since ADR-0014 has
+// one; the filter keeps the type honest for any Blur without a link.
+function linkedBlurObjects(canvas: Canvas): FabricObject[] {
+  return canvas.getObjects().filter((object) => {
+    const data = (object as TaggedObject).data;
+    return data?.kind === 'blur' && data.imageId !== undefined && data.crop !== undefined;
+  });
+}
+
+// Place a Blur exactly over the `crop` of its Image, whatever the Image's
+// current position, scale, flip, or rotation (ADR-0014). The Image's own
+// transform matrix maps its natural pixels (centered on the Image) to scene
+// coordinates; composing it with the crop's offset and the bitmap-to-crop
+// scale gives the Blur's matrix. No re-pixelation is needed: the Blur's
+// bitmap was sampled from those same natural pixels, so scaling it with the
+// Image keeps every block over the pixels it was sampled from.
+//
+// When the Blur sits inside an ActiveSelection, its own transform is relative
+// to that selection, so the target matrix is expressed in the selection's
+// space before it is applied.
+function placeBlurOnImage(blur: FabricObject, image: FabricObject, crop: BlurCrop) {
+  const bitmapWidth = blur.width || crop.width;
+  const bitmapHeight = blur.height || crop.height;
+  const imageWidth = image.width ?? 0;
+  const imageHeight = image.height ?? 0;
+  const cropInImage: [number, number, number, number, number, number] = [
+    crop.width / bitmapWidth,
+    0,
+    0,
+    crop.height / bitmapHeight,
+    crop.x + crop.width / 2 - imageWidth / 2,
+    crop.y + crop.height / 2 - imageHeight / 2,
+  ];
+  let target = util.multiplyTransformMatrices(image.calcTransformMatrix(), cropInImage);
+  if (blur.group) {
+    target = util.multiplyTransformMatrices(util.invertTransform(blur.group.calcTransformMatrix()), target);
+  }
+  util.applyTransformToObject(blur, target);
+  blur.setCoords();
+}
+
+// Re-seat every linked Blur on its Image. Called on every transform event, so
+// a Blur follows its Image live while the user drags, resizes, or rotates —
+// and snaps straight back if the user tries to drag a Blur off its Image as
+// part of a multi-selection. A Blur whose Image is gone is left alone.
+function syncBlursToImages(canvas: Canvas) {
+  for (const blur of linkedBlurObjects(canvas)) {
+    const data = (blur as TaggedObject).data!;
+    const image = imageById(canvas, data.imageId);
+    if (image) placeBlurOnImage(blur, image, data.crop!);
+  }
+}
+
+// A linked Blur cannot be moved, resized, or rotated on its own (ADR-0014):
+// its geometry is owned by its Image. It stays selectable so it can still be
+// deleted. Lock flags are not part of Fabric's serialized props, so restored
+// Blurs get these re-applied, like `applyImageInteractionDefaults`.
+function applyBlurInteractionDefaults(blur: FabricObject) {
+  blur.set({
+    lockMovementX: true,
+    lockMovementY: true,
+    lockScalingX: true,
+    lockScalingY: true,
+    lockRotation: true,
+    lockSkewingX: true,
+    lockSkewingY: true,
+    hasControls: false,
+  });
 }
 
 function isImageObject(object: FabricObject): boolean {
@@ -654,19 +747,6 @@ function createPixelatedCrop(image: HTMLImageElement, x: number, y: number, widt
   outputContext.imageSmoothingEnabled = false;
   outputContext.drawImage(small, 0, 0, small.width, small.height, 0, 0, safeWidth, safeHeight);
   return output.toDataURL('image/png');
-}
-
-// Display-coord bounding rect of a Fabric Image. Computed from left/top and
-// the scaled width/height because the Image may have been resized at paste
-// time (scaleX/scaleY != 1) or by the user (#7 corner resize). Used both for
-// the mouse-down hit-test (start-on-Image rule) and for clipping the final
-// blur rect to the source Image's bounds on mouse-up.
-function imageDisplayBounds(image: FabricImage) {
-  const left = image.left ?? 0;
-  const top = image.top ?? 0;
-  const width = image.getScaledWidth?.() ?? image.width ?? 0;
-  const height = image.getScaledHeight?.() ?? image.height ?? 0;
-  return { left, top, right: left + width, bottom: top + height, width, height };
 }
 
 function makeCallout(color: string, scale: number, left: number, top: number, number: number) {
@@ -1394,41 +1474,60 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             const dragTop = Math.min(pointer.y, drawing.startY);
             const dragRight = Math.max(pointer.x, drawing.startX);
             const dragBottom = Math.max(pointer.y, drawing.startY);
-            // Hard-clip the drag rect to the source Image's display bounds.
-            // The Image may have been moved or resized since paste (#7), so
-            // we read its bounds fresh here rather than caching at mouse-down.
-            const bounds = imageDisplayBounds(drawing.source);
-            const clipLeft = Math.max(dragLeft, bounds.left);
-            const clipTop = Math.max(dragTop, bounds.top);
-            const clipRight = Math.min(dragRight, bounds.right);
-            const clipBottom = Math.min(dragBottom, bounds.bottom);
-            const clipWidth = clipRight - clipLeft;
-            const clipHeight = clipBottom - clipTop;
+            // Map the drag rect into the source Image's NATURAL pixel
+            // coordinates through the inverse of the Image's transform, then
+            // hard-clip it to the Image (ADR-0005). The Image may have been
+            // moved, resized, or rotated since paste (#7), so we read its
+            // transform fresh here rather than caching at mouse-down. Sampling
+            // from natural pixels — not from the resized display — preserves
+            // source quality so the blur matches Skitch's per-Background blur
+            // at the same PIXEL_SIZE. The crop is widened to whole pixels
+            // (never narrowed), so the Blur covers at least what was dragged.
+            const source = drawing.source;
+            const sourceWidth = source.width ?? 0;
+            const sourceHeight = source.height ?? 0;
+            const toNatural = util.invertTransform(source.calcTransformMatrix());
+            const corners = [
+              [dragLeft, dragTop],
+              [dragRight, dragTop],
+              [dragLeft, dragBottom],
+              [dragRight, dragBottom],
+            ].map(([x, y]) => {
+              const local = util.transformPoint(new Point(x, y), toNatural);
+              return { x: local.x + sourceWidth / 2, y: local.y + sourceHeight / 2 };
+            });
+            const cropLeft = Math.max(0, Math.floor(Math.min(...corners.map((p) => p.x))));
+            const cropTop = Math.max(0, Math.floor(Math.min(...corners.map((p) => p.y))));
+            const cropRight = Math.min(sourceWidth, Math.ceil(Math.max(...corners.map((p) => p.x))));
+            const cropBottom = Math.min(sourceHeight, Math.ceil(Math.max(...corners.map((p) => p.y))));
+            const crop: BlurCrop = {
+              x: cropLeft,
+              y: cropTop,
+              width: cropRight - cropLeft,
+              height: cropBottom - cropTop,
+            };
             // Discard tiny rects (stray clicks, or drags whose intersection
             // with the source Image is too small to be intentional). Mirrors
-            // Skitch's < 8px guard.
-            if (clipWidth < BLUR_MIN_SIZE || clipHeight < BLUR_MIN_SIZE) {
+            // Skitch's < 8px guard, measured in Canvas units as before.
+            const scaling = source.getObjectScaling();
+            if (
+              crop.width * Math.abs(scaling.x) < BLUR_MIN_SIZE ||
+              crop.height * Math.abs(scaling.y) < BLUR_MIN_SIZE
+            ) {
               canvas.requestRenderAll();
               return;
             }
-            // Map the clipped display rect into the source Image's NATURAL
-            // pixel coordinates. The Image's display origin is (left, top)
-            // and each natural pixel occupies `scaleX` display units along x
-            // (and `scaleY` along y). Sampling from natural pixels — not from
-            // the resized display — preserves source quality so the blur
-            // matches Skitch's per-Background blur byte-for-byte at the same
-            // PIXEL_SIZE.
-            const source = drawing.source;
-            const scaleX = source.scaleX ?? 1;
-            const scaleY = source.scaleY ?? 1;
-            const naturalX = (clipLeft - bounds.left) / scaleX;
-            const naturalY = (clipTop - bounds.top) / scaleY;
-            const naturalWidth = clipWidth / scaleX;
-            const naturalHeight = clipHeight / scaleY;
             const element = source.getElement() as HTMLImageElement;
-            const dataUrl = createPixelatedCrop(element, naturalX, naturalY, naturalWidth, naturalHeight);
-            const blurLeft = clipLeft;
-            const blurTop = clipTop;
+            const dataUrl = createPixelatedCrop(element, crop.x, crop.y, crop.width, crop.height);
+            // ADR-0014: the Blur records which Image it belongs to. Images
+            // pasted before ids existed cannot occur (history is in-memory),
+            // but give the source one if it somehow lacks it.
+            const sourceData = (source as TaggedObject).data ?? { kind: 'image' };
+            if (!sourceData.id) {
+              sourceData.id = newImageId();
+              (source as TaggedObject).data = sourceData;
+            }
+            const imageId = sourceData.id;
             // Schedule the FabricImage.fromURL decode behind any other
             // in-flight async mutation (paste, restore). Skipping the queue
             // would reintroduce the race that wave-3 fixed — a concurrent
@@ -1438,19 +1537,17 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
               const c = canvasRef.current;
               if (!c) return;
               const blurImage = await FabricImage.fromURL(dataUrl);
-              // Scale the natural-resolution pixelated crop down into the
-              // clipped display rect's display dimensions. Without this the
-              // blur would render at natural-pixel size on the canvas and
-              // visually overshoot the source Image's resized footprint.
-              const finalScaleX = clipWidth / (blurImage.width ?? clipWidth);
-              const finalScaleY = clipHeight / (blurImage.height ?? clipHeight);
-              blurImage.set({
-                left: blurLeft,
-                top: blurTop,
-                scaleX: finalScaleX,
-                scaleY: finalScaleY,
-                data: { kind: 'blur' },
-              });
+              // A delete (or a queued undo) may have removed the source
+              // Image before this decode finished. A Blur with no Image has
+              // nothing to hide; drop it.
+              const image = imageById(c, imageId);
+              if (!image) return;
+              blurImage.set({ data: { kind: 'blur', imageId, crop } });
+              // Seat the natural-resolution pixelated crop over its crop of
+              // the Image — position, scale, and any rotation all come from
+              // the Image's transform (ADR-0014).
+              placeBlurOnImage(blurImage, image, crop);
+              applyBlurInteractionDefaults(blurImage);
               addFinalObject(blurImage);
             });
           } else {
@@ -1563,11 +1660,22 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         if ((target.top ?? 0) < 0) target.set('top', 0);
       };
 
+      // ADR-0014: a Blur follows its Image. Re-seat linked Blurs on every
+      // frame of a move, resize, or rotate — whatever the target is (an
+      // Image, a Blur, or a multi-selection) — so the Blur never shows off
+      // its Image, even mid-gesture. Registered after `handleObjectMoving` so
+      // it reads the clamped Image position.
+      const handleObjectTransforming = () => {
+        syncBlursToImages(canvas);
+      };
+
       // History on user-driven mutations: drag, resize, rotate
       // (object:modified); typing into a text annotation (text:changed).
       // After object:modified the bounding box may have grown or shrunk, so
-      // re-fit. fitCanvasToViewport is idempotent.
+      // re-fit. fitCanvasToViewport is idempotent. Blurs are re-seated first
+      // so the snapshot records them over their Images (ADR-0014).
       const handleObjectModified = () => {
+        syncBlursToImages(canvas);
         saveHistorySnapshot();
         fitCanvasToViewport();
       };
@@ -1695,6 +1803,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       const handleLiveObjectChange = (event: { target: FabricObject }) => growCanvasForLiveObject(event.target);
       canvas.on('object:moving', handleLiveObjectChange);
       canvas.on('object:scaling', handleLiveObjectChange);
+      // Re-seat linked Blurs only after the Image has been clamped on move or
+      // scale, so their crop tracks the final live geometry.
+      canvas.on('object:moving', handleObjectTransforming);
+      canvas.on('object:scaling', handleObjectTransforming);
+      canvas.on('object:rotating', handleObjectTransforming);
+      canvas.on('object:skewing', handleObjectTransforming);
       canvas.on('object:modified', handleObjectModified);
       // A drag that ends without committing anything (tiny rectangle, a blur
       // that clips to nothing) never reaches a re-fit; do it here. After a real
@@ -1804,6 +1918,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
           applyImageInteractionDefaults(object as FabricObject);
         }
       });
+      // ADR-0014: linked Blurs get their lock flags back (not serialized)
+      // and are re-seated on their Images, so a restored state can never
+      // show a Blur off the Image it hides.
+      linkedBlurObjects(canvas).forEach(applyBlurInteractionDefaults);
+      syncBlursToImages(canvas);
       // Reconcile selectable/evented with the current active tool: a snapshot
       // captured while the Select tool was active will round-trip selectable=
       // true, but if the user has since switched to a drawing tool we want
@@ -2055,7 +2174,8 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
               // toggles after paste.
               selectable: isSelect,
               evented: isSelect,
-              data: { kind: 'image' },
+              // `id` lets a Blur record which Image it hides (ADR-0014).
+              data: { kind: 'image', id: newImageId() },
             });
             applyImageInteractionDefaults(image);
             canvas.add(image);
@@ -2291,7 +2411,16 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
             .getActiveObjects()
             .filter((object) => (object as TaggedObject).data?.kind !== undefined);
           if (targets.length === 0) return;
-          targets.forEach((object) => canvas.remove(object));
+          // ADR-0014: deleting an Image deletes the Blurs drawn on it, in the
+          // same undo step. A Blur left behind would hide nothing and could
+          // later sit over a different Image's pixels.
+          const deletedImageIds = new Set(
+            targets.filter(isImageObject).map((object) => (object as TaggedObject).data?.id),
+          );
+          const orphanedBlurs = linkedBlurObjects(canvas).filter(
+            (blur) => !targets.includes(blur) && deletedImageIds.has((blur as TaggedObject).data?.imageId),
+          );
+          [...targets, ...orphanedBlurs].forEach((object) => canvas.remove(object));
           canvas.discardActiveObject();
           // Programmatic discardActiveObject doesn't always fire
           // `selection:cleared`; notify the parent so the Delete button's
