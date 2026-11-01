@@ -40,7 +40,7 @@ Standard editing shortcuts still work:
 | `Cmd+Z` / `Ctrl+Z` | Undo |
 | `Cmd+Shift+Z` / `Ctrl+Shift+Z` | Redo |
 
-While editing a text annotation, `Cmd+Z` / `Ctrl+Z` follows the text editor's undo behavior; it does not undo a canvas annotation. Finish editing to undo canvas changes.
+While editing a text annotation, `Cmd+Z` / `Ctrl+Z` follows the text editor's undo behavior; it does not undo a canvas annotation. Finish editing to undo canvas changes. Clicking inside the text moves the caret; clicking outside the canvas ends editing. After editing ends, the text remains selectable with Select, and an empty text annotation is removed.
 
 While a drawing tool is sticky (Rectangle, Arrow, Blur, Text, Step), clicking on an existing annotation auto-switches to Select and picks it up instead of creating a new annotation on top. A Rectangle counts as clicked only on its border and an Arrow only on its drawn line, so clicking inside a Rectangle's empty inside starts the current tool there (for example, typing text inside a box); Blur boxes and Steps are picked up anywhere on them. With the Select tool, clicking inside a Rectangle still selects it.
 
