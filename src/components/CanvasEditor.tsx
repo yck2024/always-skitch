@@ -296,8 +296,8 @@ function keepOnImage(target: FabricObject, image: { width: number; height: numbe
   members.forEach((member) => {
     member.setCoords();
     const box: Bounds = member.getBoundingRect();
-    const visibleX = Math.min(minVisible, box.width);
-    const visibleY = Math.min(minVisible, box.height);
+    const visibleX = Math.min(minVisible, box.width, image.width);
+    const visibleY = Math.min(minVisible, box.height, image.height);
     minDx = Math.max(minDx, visibleX - (box.left + box.width));
     maxDx = Math.min(maxDx, image.width - visibleX - box.left);
     minDy = Math.max(minDy, visibleY - (box.top + box.height));
