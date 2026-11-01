@@ -214,6 +214,13 @@ button.primary {
   display: block;
 }
 
+/* Single-image page: the canvas is the screenshot plus a gutter (ADR-0013).
+   Tint the gutter so the screenshot reads as an inset, and so the handles of
+   annotations at its edge sit on a visible surface. */
+.canvas-wrap.skitch-wrap {
+  background: #e7ebf1;
+}
+
 .toast-stack {
   position: fixed;
   right: 1rem;
