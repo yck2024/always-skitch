@@ -19,6 +19,7 @@ import {
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
+import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
 // (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
@@ -364,8 +365,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
       // switch to Select and pick the object up instead of stacking a new
       // annotation on top. Annotations are evented=false while a drawing tool
       // is active, so Fabric's own hit-test won't see them — we walk them
-      // manually with containsPoint().
-      const hit = annotationObjects(canvas).find((object) => object.containsPoint(pointer));
+      // manually. Hollow Rectangles and Arrows match on border / drawn line
+      // only (ADR-0012), so a click in a Rectangle's empty inside falls
+      // through to the active tool.
+      const hit = annotationObjects(canvas).find((object) =>
+        annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX * annotationScale()),
+      );
       if (hit) {
         activeToolRef.current = 'select';
         hit.selectable = true;

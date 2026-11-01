@@ -20,6 +20,7 @@ import type { Tool } from '../types';
 import { DEFAULT_WEIGHT } from '../weights';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
+import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
 import { extractDominantColor } from './utils/extractDominantColor';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
@@ -1040,10 +1041,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         // and pick the object up instead of stacking a new annotation on top.
         // Annotations are evented=false while a drawing tool is active, so
         // Fabric's own hit-test won't see them — we walk them manually.
+        // Hollow Rectangles and Arrows match on border / drawn line only
+        // (ADR-0012), so a click in a Rectangle's empty inside falls through
+        // to the active tool.
         // NOTE (wave 3): we intentionally only check `annotationObjects`, not
         // Images. Clicking an Image while a drawing tool is active starts a
         // new drawing on top (per principle 5 of the integration brief).
-        const hit = annotationObjects(canvas).find((object) => object.containsPoint(pointer));
+        const hit = annotationObjects(canvas).find((object) =>
+          annotationContainsPoint(object, pointer, HIT_TOLERANCE_PX * annotationScale()),
+        );
         if (hit) {
           activeToolRef.current = 'select';
           hit.selectable = true;
