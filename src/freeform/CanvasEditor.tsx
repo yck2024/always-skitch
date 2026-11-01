@@ -16,6 +16,7 @@ import {
   Triangle,
   util,
 } from 'fabric';
+import type { TOriginX, TOriginY } from 'fabric';
 import type { Tool } from '../types';
 import { DEFAULT_WEIGHT } from '../weights';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
@@ -31,6 +32,10 @@ import { extractDominantColor } from './utils/extractDominantColor';
 // repeat it. Cheap and explicit beats "remember the import order".
 FabricObject.ownDefaults.originX = 'left';
 FabricObject.ownDefaults.originY = 'top';
+// Fabric lets a handle dragged past the opposite edge flip the object (a
+// mirrored screenshot, a backwards Step digit). Lock that globally: the drag
+// just stops at the opposite edge instead.
+FabricObject.ownDefaults.lockScalingFlip = true;
 
 // Maximum display width for a newly pasted Image. We never touch the underlying
 // HTMLImageElement's pixels — only Fabric's `width`/`height` (which control
@@ -293,6 +298,91 @@ export interface FreeformCanvasEditorHandle {
 // the only non-annotation kind today; anything else with a `data.kind` set is
 // an Annotation by elimination.
 type TaggedObject = FabricObject & { data?: { kind?: string } };
+
+// A Rectangle's stroke must stay at its Line weight when the Rectangle is
+// resized. Fabric resizes by scaling, which stretches the stroke unevenly and
+// smears the rounded corners, so fold the scale into width/height and reset it
+// to 1. The outer box (which includes the stroke) is kept exactly as dragged:
+// (width + stroke) * scale = (width' + stroke). strokeWidth and rx/ry are left
+// alone, so the weight and the corner radius stay what they were.
+function bakeRectangleScale(rect: FabricObject) {
+  const scaleX = rect.scaleX ?? 1;
+  const scaleY = rect.scaleY ?? 1;
+  if (scaleX === 1 && scaleY === 1) return;
+  const stroke = rect.strokeWidth ?? 0;
+  rect.set({
+    width: Math.max(0, ((rect.width ?? 0) + stroke) * scaleX - stroke),
+    height: Math.max(0, ((rect.height ?? 0) + stroke) * scaleY - stroke),
+    scaleX: 1,
+    scaleY: 1,
+  });
+  rect.setCoords();
+}
+
+type ScaleAnchor = { originX: TOriginX; originY: TOriginY };
+
+// A Step is a circle, so it may only scale uniformly. Corner drags are
+// proportional already, but Shift toggles that off, so average the two scales
+// and put the anchored corner back where Fabric held it.
+function keepStepCircular(step: FabricObject, transform?: ScaleAnchor) {
+  const scaleX = step.scaleX ?? 1;
+  const scaleY = step.scaleY ?? 1;
+  if (Math.abs(scaleX - scaleY) < 1e-6) return;
+  const anchor = transform
+    ? step.translateToOriginPoint(step.getRelativeCenterPoint(), transform.originX, transform.originY)
+    : undefined;
+  const scale = (scaleX + scaleY) / 2;
+  step.set({ scaleX: scale, scaleY: scale });
+  if (anchor && transform) step.setPositionByOrigin(anchor, transform.originX, transform.originY);
+  step.setCoords();
+}
+
+// Steps hide the side handles (they would stretch the circle into an oval).
+// `_controlsVisibility` is not serialized, so a Step restored by undo/redo
+// comes back with all handles; re-apply on every selection instead.
+function hideStepSideHandles(canvas: Canvas) {
+  const active = canvas.getActiveObject();
+  if (!active) return;
+  const members = active instanceof ActiveSelection ? active.getObjects() : [active];
+  if (!members.some((object) => (object as TaggedObject).data?.kind === 'callout')) return;
+  active.setControlsVisibility({ ml: false, mr: false, mt: false, mb: false });
+}
+
+// Images never go left of or above the origin (#7). handleObjectMoving holds
+// that for drags; this holds it for corner resizes, where the dragged edge
+// would otherwise cross 0. Shrink the Image so that edge lands exactly on 0,
+// keeping the opposite (anchored) corner where it is. A proportional resize
+// shrinks both axes by the same factor so the aspect ratio survives.
+function clampImageScaleToOrigin(
+  image: FabricObject,
+  transform?: ScaleAnchor & { original?: { scaleX?: number; scaleY?: number } },
+) {
+  const left = image.left ?? 0;
+  const top = image.top ?? 0;
+  if (left >= 0 && top >= 0) return;
+  if (!transform) {
+    image.set({ left: Math.max(0, left), top: Math.max(0, top) });
+    return;
+  }
+  const width = image.getScaledWidth();
+  const height = image.getScaledHeight();
+  let factorX = left < 0 ? (left + width) / width : 1;
+  let factorY = top < 0 ? (top + height) / height : 1;
+  const { scaleX: originalX = 1, scaleY: originalY = 1 } = transform.original ?? {};
+  const proportional = Math.abs(image.scaleX / image.scaleY - originalX / originalY) < 1e-6;
+  if (proportional) factorX = factorY = Math.min(factorX, factorY);
+  const anchor = image.translateToOriginPoint(image.getRelativeCenterPoint(), transform.originX, transform.originY);
+  // Images carry a uniform (screen-constant) hairline stroke, so the outer size
+  // is `natural * scale + stroke`, not `(natural + stroke) * scale`: invert it.
+  const stroke = image.strokeUniform ? (image.strokeWidth ?? 0) : 0;
+  image.set({
+    scaleX: (width * factorX - stroke) / (image.width ?? 1),
+    scaleY: (height * factorY - stroke) / (image.height ?? 1),
+  });
+  image.setPositionByOrigin(anchor, transform.originX, transform.originY);
+  image.set({ left: Math.max(0, image.left ?? 0), top: Math.max(0, image.top ?? 0) });
+  image.setCoords();
+}
 
 function imageObjects(canvas: Canvas): FabricObject[] {
   return canvas.getObjects().filter((object) => (object as TaggedObject).data?.kind === 'image');
@@ -721,6 +811,69 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
     // Active drag-tool state (arrow/rectangle). null between drags.
     const drawingRef = useRef<DrawingState | null>(null);
 
+    // #42: the canvas element is sized exactly to the content, so an object
+    // dragged (or drawn) past its edge is clipped until the drop re-fits. While
+    // the pointer is down, grow the element, not the zoom, to cover the live
+    // object. Growing right/down is free; growing left/up also shifts the pan so
+    // scene coordinates stay put. Negative margins on the wrapper give the extra
+    // pixels back to the layout (and .canvas-wrap lets them overflow), so the
+    // canvas does not re-center under the pointer. `liveGrowRef` holds the pixels added per side; the re-fit on drop
+    // (fitCanvasToViewport -> resetLiveGrow) puts everything back.
+    const liveGrowRef = useRef({ left: 0, top: 0, right: 0, bottom: 0 });
+    const resetLiveGrow = () => {
+      const grown = liveGrowRef.current;
+      if (!grown.left && !grown.top && !grown.right && !grown.bottom) return;
+      liveGrowRef.current = { left: 0, top: 0, right: 0, bottom: 0 };
+      const wrapper = canvasRef.current?.wrapperEl;
+      if (wrapper) wrapper.style.margin = '';
+      if (wrapper?.parentElement) wrapper.parentElement.style.overflow = '';
+    };
+    const growCanvasForLiveObject = (object: FabricObject) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const zoom = canvas.getZoom();
+      const transform = canvas.viewportTransform;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      // Fabric fires object:moving/scaling before it refreshes the corner
+      // coordinates; without this the canvas trails the object by one event.
+      object.setCoords();
+      for (const point of object.getCoords()) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+      }
+      // Scene -> canvas-element pixels.
+      const addLeft = Math.max(0, Math.ceil(-(minX * zoom + transform[4])));
+      const addTop = Math.max(0, Math.ceil(-(minY * zoom + transform[5])));
+      const addRight = Math.max(0, Math.ceil(maxX * zoom + transform[4] - canvas.getWidth()));
+      const addBottom = Math.max(0, Math.ceil(maxY * zoom + transform[5] - canvas.getHeight()));
+      if (!addLeft && !addTop && !addRight && !addBottom) return;
+      const grown = liveGrowRef.current;
+      grown.left += addLeft;
+      grown.top += addTop;
+      grown.right += addRight;
+      grown.bottom += addBottom;
+      canvas.setDimensions({
+        width: canvas.getWidth() + addLeft + addRight,
+        height: canvas.getHeight() + addTop + addBottom,
+      });
+      if (addLeft || addTop) {
+        canvas.setViewportTransform([zoom, 0, 0, zoom, transform[4] + addLeft, transform[5] + addTop]);
+      }
+      const wrapper = canvas.wrapperEl;
+      if (wrapper) {
+        wrapper.style.margin = `${-grown.top}px ${-grown.right}px ${-grown.bottom}px ${-grown.left}px`;
+        // .canvas-wrap clips its overflow (overflow: auto); the grown part has
+        // to paint outside its box.
+        if (wrapper.parentElement) wrapper.parentElement.style.overflow = 'visible';
+      }
+      canvas.calcOffset();
+    };
+
     // Auto-fit: scale the whole canvas so the bounding box of all visible
     // Freeform content (Images + Annotations) fits the viewport (the
     // .canvas-shell flex slot). Mirrors Skitch's fitCanvasToViewport but keyed
@@ -731,6 +884,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       const canvas = canvasRef.current;
       const shell = canvasShellRef.current;
       if (!canvas || !shell) return;
+      resetLiveGrow();
       const content = freeformObjects(canvas);
       // Keep auto-fit anchored on Images: don't grow the canvas just because an
       // Annotation exists without any underlying Image. (Annotations alone
@@ -1209,6 +1363,12 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
         } else {
           updateArrowPreview(drawing.line, drawing.head, drawing.startX, drawing.startY, pointer.x, pointer.y);
         }
+        if (drawing.kind === 'arrow') {
+          growCanvasForLiveObject(drawing.line);
+          growCanvasForLiveObject(drawing.head);
+        } else {
+          growCanvasForLiveObject(drawing.object);
+        }
         canvas.requestRenderAll();
       };
 
@@ -1501,7 +1661,48 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.on('mouse:move', handleMouseMove);
       canvas.on('mouse:up', handleMouseUp);
       canvas.on('object:moving', handleObjectMoving);
+      // Resize hooks (#38, #41). Live, so the stroke never looks stretched, a
+      // Step never looks like an oval and an Image never crosses the origin
+      // while the handle is being dragged...
+      canvas.on('object:scaling', (event) => {
+        const kind = (event.target as TaggedObject).data?.kind;
+        if (kind === 'rectangle') bakeRectangleScale(event.target);
+        else if (kind === 'callout') keepStepCircular(event.target, event.transform);
+        else if (kind === 'image') clampImageScaleToOrigin(event.target, event.transform);
+      });
+      // ...and once more on release, which also covers Rectangles resized as
+      // part of a multi-selection (their scale only becomes their own after the
+      // selection is dropped). Registered BEFORE handleObjectModified so the
+      // history snapshot already holds the baked geometry.
+      canvas.on('object:modified', (event) => {
+        const target = event.target;
+        if (target instanceof ActiveSelection) {
+          const members = target.getObjects();
+          if (!members.some((object) => (object as TaggedObject).data?.kind === 'rectangle')) return;
+          canvas.discardActiveObject();
+          members.forEach((object) => {
+            if ((object as TaggedObject).data?.kind === 'rectangle') bakeRectangleScale(object);
+          });
+          canvas.setActiveObject(new ActiveSelection(members, { canvas }));
+        } else if ((target as TaggedObject).data?.kind === 'rectangle') {
+          bakeRectangleScale(target);
+        }
+      });
+      const syncStepHandles = () => hideStepSideHandles(canvas);
+      canvas.on('selection:created', syncStepHandles);
+      canvas.on('selection:updated', syncStepHandles);
+      // #42: keep the live object visible past the canvas edge.
+      const handleLiveObjectChange = (event: { target: FabricObject }) => growCanvasForLiveObject(event.target);
+      canvas.on('object:moving', handleLiveObjectChange);
+      canvas.on('object:scaling', handleLiveObjectChange);
       canvas.on('object:modified', handleObjectModified);
+      // A drag that ends without committing anything (tiny rectangle, a blur
+      // that clips to nothing) never reaches a re-fit; do it here. After a real
+      // commit the canvas is already back to its fitted size, so this is a no-op.
+      canvas.on('mouse:up', () => {
+        const grown = liveGrowRef.current;
+        if (grown.left || grown.top || grown.right || grown.bottom) fitCanvasToViewport();
+      });
       canvas.on('text:changed', saveHistorySnapshot);
       canvas.on('selection:created', emitSelectionChange);
       canvas.on('selection:updated', emitSelectionChange);

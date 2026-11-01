@@ -1,6 +1,6 @@
 # 0004 Freeform's Canvas auto-grows to fit content; no pan or zoom in MVP
 
-The Freeform **Canvas** has no fixed size. It is sized to the bounding box of all **Images** and **Annotations**, and the display scales the entire canvas to fit the viewport (mirroring how Skitch fits a single **Background** to the window). There is no pan, no zoom, and no scrollbar. Apple Freeform's "infinite canvas" feel is explicitly out of scope for v1.
+The Freeform **Canvas** has no fixed size. It is sized to the bounding box of all **Images** and **Annotations**, and the display scales the entire canvas to fit the viewport (mirroring how Skitch fits a single **Background** to the window). There is no pan or zoom. While an object is being dragged or resized beyond the fitted edges, the canvas temporarily expands so the object remains visible; it refits when the interaction ends. Apple Freeform's "infinite canvas" feel is explicitly out of scope for v1.
 
 ## Considered options
 
