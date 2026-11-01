@@ -13,7 +13,7 @@ A pasted screenshot on the **Canvas**. Draggable, resizable, deletable. A **Canv
 _Avoid_: photo, picture, tile, card, panel, background
 
 **Annotation**:
-A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Usually lives in canvas coordinates; a blur belongs to the **Image** it was drawn on (ADR-0014).
+A shape (arrow, rectangle, text, Step, blur) on the **Canvas**. Blur attachment is the exception (ADR-0014).
 _Avoid_: shape, marker
 
 **Step**:
@@ -54,8 +54,7 @@ _Avoid_: reset, new canvas, empty, wipe, start over
 ## Relationships
 
 - A **Canvas** hosts zero or more **Images** and zero or more **Annotations**.
-- **Images** and most **Annotations** are siblings on the **Canvas**; a blur is bound to its **Image** (ADR-0014).
-- Every **Annotation** except a blur stays put when an **Image** moves; see [ADR-0014](./docs/adr/0014-blur-follows-its-image.md) for the blur exception.
+- **Images** and **Annotations** are generally siblings on the **Canvas**; Blur attachment is the exception defined by [ADR-0014](./docs/adr/0014-blur-follows-its-image.md).
 - **Annotations** always render on top of all **Images**. The user has no operation that puts an **Image** above an **Annotation**.
 - Among **Annotations**, **Layer order** follows draw order — newer in front of older. There are no per-Annotation reorder controls in MVP.
 - Among **Images**, **Layer order** is user-controlled via **Bring to Front** / **Send to Back**. A freshly pasted **Image** lands at the top of the Image stack by default (still below all Annotations).
@@ -65,8 +64,6 @@ _Avoid_: reset, new canvas, empty, wipe, start over
 
 > **Dev:** "If I drag an Image, do the arrows I drew on top of it follow?"
 > **PM:** "No. Annotations live in Canvas coordinates. If the user wants them to move together, they group-select first."
-> **Dev:** "Even a blur?"
-> **PM:** "Blur is the one exception; see ADR-0014."
 > **Dev:** "What if I paste a new Image — does it land on top of my existing Annotations?"
 > **PM:** "No. Annotations always render on top of all Images. Pasting another Image can never cover your annotations."
 > **Dev:** "What about another Image — can a new paste cover an older Image?"

@@ -14,6 +14,4 @@ In Freeform, the Blur tool can only be used on top of an **Image**. Hovering emp
 - Cross-image redaction requires two blur strokes. Acceptable given the rarity.
 - Implementation reuses Skitch's existing `createPixelatedCrop` almost verbatim — just plumbed to "the **Image** under the cursor" instead of "the singular **Background**."
 
-## Update — Blur follows its Image (ADR-0014)
-
-[ADR-0014](./0014-blur-follows-its-image.md) builds on this ADR. The one **Image** a Blur is sampled from and clipped to is also the **Image** it stays attached to: moving, resizing, or rotating that **Image** carries the Blur with it, and deleting the **Image** deletes the Blur. The sampling and clipping rules above are unchanged.
+Blur attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).

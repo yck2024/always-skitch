@@ -9,11 +9,7 @@ In the Freeform context, non-Blur **Annotations** (arrows, rectangles, text, cal
 
 ## Consequences
 
-- Group-select-and-drag is the way to move an **Image** with its non-Blur **Annotations** together; users must learn this gesture. Blur follows its **Image** under ADR-0014.
+- Group-select-and-drag is the way to move an **Image** with its non-Blur **Annotations** together; users must learn this gesture. Blur attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).
 - Cross-image arrows ("this state → that state") are a natural first-class operation, supporting flow/sequence use cases without special code.
 - Annotation serialization stays a flat list of canvas-coordinate objects, identical in shape to Skitch's existing history model.
 - Blur's creation and image-bound clipping rules are in [ADR-0005](./0005-blur-per-image-only.md); its attachment behavior is defined by [ADR-0014](./0014-blur-follows-its-image.md).
-
-## Update — Blur amended by ADR-0014
-
-For Blur only, the canvas-level rule above is amended by [ADR-0014](./0014-blur-follows-its-image.md). A Blur now belongs to the **Image** it was drawn on and moves, resizes, and rotates with it, because a Blur left behind shows the content it was hiding. Every other **Annotation** still lives in **Canvas** coordinates and stays put when an **Image** moves.
