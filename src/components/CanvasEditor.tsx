@@ -20,6 +20,7 @@ import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
+import { toAbsoluteObject } from '../utils/absoluteTransform';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
 // (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
@@ -65,8 +66,11 @@ function annotationObjects(canvas: Canvas) {
   return canvas.getObjects().filter((object) => (object as FabricObject & { data?: { kind?: string } }).data?.kind !== 'background');
 }
 
+// Snapshots are always taken in absolute coordinates, even while an
+// ActiveSelection is live (group move/resize/rotate via object:modified, or a
+// recolor of a multi-selection) — see toAbsoluteObject.
 function serializeAnnotations(canvas: Canvas): HistoryState {
-  return JSON.stringify(annotationObjects(canvas).map((object) => object.toObject(['data'])));
+  return JSON.stringify(annotationObjects(canvas).map((object) => toAbsoluteObject(object, ['data'])));
 }
 
 function makeBackground(image: FabricImage) {
@@ -252,7 +256,11 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const activeWeightRef = useRef(activeWeight);
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
+  // `restoringRef` suppresses saveHistory while a restore is mutating the
+  // canvas.
   const restoringRef = useRef(false);
+  // Queue rapid Undo/Redo so restores run one at a time and in press order.
+  const restoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const displayScaleRef = useRef(1);
 
   const fitCanvasToViewport = () => {
@@ -634,6 +642,18 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
   };
 
+  // Run restores one at a time, in the order Undo/Redo were pressed. The
+  // state is read when the key is pressed, so a burst of presses walks the
+  // history exactly once per press. `.then(noop, noop)` keeps the chain alive
+  // if a restore rejects.
+  const queueRestore = (state: HistoryState) => {
+    const next = restoreQueueRef.current.then(() => restoreHistory(state));
+    restoreQueueRef.current = next.then(
+      () => undefined,
+      () => undefined,
+    );
+  };
+
   const exportDataUrl = () => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -648,12 +668,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     undo: () => {
       if (historyIndexRef.current <= 0) return;
       historyIndexRef.current -= 1;
-      void restoreHistory(historyRef.current[historyIndexRef.current]);
+      queueRestore(historyRef.current[historyIndexRef.current]);
     },
     redo: () => {
       if (historyIndexRef.current >= historyRef.current.length - 1) return;
       historyIndexRef.current += 1;
-      void restoreHistory(historyRef.current[historyIndexRef.current]);
+      queueRestore(historyRef.current[historyIndexRef.current]);
     },
     deleteSelected: () => {
       const canvas = canvasRef.current;
@@ -742,10 +762,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         // skip them (recolorSelected's behavior), but keep them selected.
         return object;
       });
-      // Serialize BEFORE re-selecting: serializeAnnotations reads each
-      // object's own left/top, which turn group-relative the moment an
-      // ActiveSelection wraps them again — snapshotting now keeps history
-      // states in absolute coordinates.
+      // Serialize while the selection is discarded. serializeAnnotations is
+      // absolute even inside an ActiveSelection (toAbsoluteObject), so this
+      // order is no longer load-bearing for positions; it simply snapshots
+      // the plain, unwrapped objects.
       const next = serializeAnnotations(canvas);
       if (next !== historyRef.current[historyIndexRef.current]) {
         historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
