@@ -11,5 +11,6 @@ The Freeform **Canvas** has no fixed size. It is sized to the bounding box of al
 
 - Practical soft cap of ~2–4 **Images** per canvas before the display scales them too small for comfortable annotation. Documented as the intended use case.
 - Export is unambiguous (bounding box of all content + padding) — no "visible viewport vs. all content" decision needed.
+- The fit tracks content in both directions: when content gets smaller, the canvas fits back down. A **Text** counts at its box width, so the box must not stay wider than its wrap width or its longest word needs. A word longer than the box widens it (Fabric's Textbox), and once a line break or deletion shortens that word, the box narrows back (`src/utils/textWidth.ts`). The canvas re-fits as soon as the box narrows, so it shrinks back while the text is still being edited.
 - Annotation scale math stays similar to Skitch (one `displayScale` per canvas), just keyed off the bounding box of all **Images** instead of one **Background's** natural size.
 - A V2 zoom (without pan) is the most likely next step if users complain about precision on small displays.

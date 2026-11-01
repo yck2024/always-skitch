@@ -44,6 +44,8 @@ While editing a text annotation, `Cmd+Z` / `Ctrl+Z` follows the text editor's un
 
 While a drawing tool is sticky (Rectangle, Arrow, Blur, Text, Step), clicking on an existing annotation auto-switches to Select and picks it up instead of creating a new annotation on top. A Rectangle counts as clicked only on its border and an Arrow only on its drawn line, so clicking inside a Rectangle's empty inside starts the current tool there (for example, typing text inside a box); Blur boxes and Steps are picked up anywhere on them. With the Select tool, clicking inside a Rectangle still selects it.
 
+A text annotation wraps at its box width (drag a side handle to change it). A word too long for the box widens the box to fit; once Enter or Backspace shortens the longest word, the box narrows back to its width, and Freeform's canvas shrinks with it.
+
 The screenshot sits inside a small grey margin so the handles of an annotation at the image edge stay visible and usable. Annotations can overhang the image edge, but a single annotation can't be dragged or resized fully off it: at least a small part always stays on the image so there is still something to grab. A multi-selection is kept partly on the image; if its members' constraints conflict, some members may end up fully off-image. New annotations start and end on the image, so a drag that overshoots the edge stops at the edge. The exported PNG is exactly the screenshot's size and content; the margin and anything hanging past the edge are not included.
 
 ## Run locally

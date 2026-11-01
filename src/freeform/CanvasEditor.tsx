@@ -23,6 +23,7 @@ import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
 import { absoluteBoundingRect, toAbsoluteObject } from '../utils/absoluteTransform';
+import { fitTextWidthToContent, rememberResizedTextWrapWidth } from '../utils/textWidth';
 import { extractDominantColor } from './utils/extractDominantColor';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
@@ -718,10 +719,11 @@ function updateArrowPreview(line: Line, head: Triangle, startX: number, startY: 
 }
 
 function makeText(color: string, scale: number, left: number, top: number) {
+  const width = 260 * scale;
   return new Textbox('Text', {
     left,
     top,
-    width: 260 * scale,
+    width,
     fill: color,
     stroke: '#ffffff',
     strokeWidth: 2.5 * scale,
@@ -731,7 +733,9 @@ function makeText(color: string, scale: number, left: number, top: number) {
     fontSize: FONT_SIZE * scale,
     fontWeight: 900,
     editable: true,
-    data: { kind: 'text' },
+    // wrapWidth: the width the box narrows back to once a long word is split
+    // (utils/textWidth).
+    data: { kind: 'text', wrapWidth: width },
   });
 }
 
@@ -1793,11 +1797,15 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
 
       // Typing can add lines below the current content bounds; refit as the
       // text grows so new lines don't run off the bottom of the canvas until
-      // editing ends. fitCanvasToViewport is idempotent and cheap. An emptied
+      // editing ends. fitCanvasToViewport is idempotent and cheap. A line
+      // break can also shorten the Text's longest word, so the Text is
+      // narrowed back first (utils/textWidth) and the canvas shrinks with it
+      // instead of keeping the width the long line had pushed out. An emptied
       // text is not snapshotted: it is removed when editing ends (#36), and
       // an empty-text state in history would let Undo bring back the
       // invisible box.
       const handleTextChanged = ({ target }: { target: FabricObject }) => {
+        fitTextWidthToContent(target);
         if (((target as Textbox).text ?? '').trim() !== '') saveHistorySnapshot();
         fitCanvasToViewport();
       };
@@ -1898,6 +1906,7 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
       canvas.on('object:scaling', handleObjectTransforming);
       canvas.on('object:rotating', handleObjectTransforming);
       canvas.on('object:skewing', handleObjectTransforming);
+      canvas.on('object:modified', rememberResizedTextWrapWidth);
       canvas.on('object:modified', handleObjectModified);
       // A drag that ends without committing anything (tiny rectangle, a blur
       // that clips to nothing) never reaches a re-fit; do it here. After a real
