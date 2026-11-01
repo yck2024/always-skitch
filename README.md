@@ -118,7 +118,3 @@ Manual deployment also works:
 - The **Paste Image** button uses the async Clipboard API, which some browsers may block or require a permission prompt.
 - **Copy PNG** uses `ClipboardItem` for `image/png`. If the browser does not support image clipboard writes, Mini Skitch automatically downloads the PNG instead.
 - Safari support depends on the Safari version and system clipboard permissions.
-
-## Support
-
-If Mini Skitch saves you time, you can support its development on Ko-fi: [ko-fi.com/kengblog](https://ko-fi.com/kengblog).
