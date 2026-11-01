@@ -19,7 +19,7 @@ The escape now matches the drawn geometry for those two kinds, in both Skitch an
 ## Consequences
 
 - The geometry lives in one pure helper, `src/utils/hitTest.ts`, used by both editors. Each editor still owns its own event wiring (ADR-0002, ADR-0008): only the question "does this pointer count as on this annotation" is shared, so the two routes cannot drift on it.
-- The test works in the object's own transform (position, scale, rotation) and takes its tolerance from the editor's `annotationScale()`, so it holds at any zoom. The border band uses the Rectangle's actual stroke width, so the grabbable area follows the **Line weight** — a Thick border is easier to grab than a Thin one.
+- The test works in the object's own transform (position, scale, rotation) and converts its 6 screen-pixel tolerance using the actual canvas display scale, independent of the stroke-size `annotationScale()` clamp, so it holds at any zoom. The border band uses the Rectangle's actual stroke width, so the grabbable area follows the **Line weight** — a Thick border is easier to grab than a Thin one.
 - Fabric's Select-tool targeting and the ADR-0008 text dismissal guard (which uses `containsPoint` on the text being edited) are deliberately untouched.
 - A Rectangle drawn around other annotations no longer captures clicks meant for them, but a click in the thin band where its border overlaps a Step or text still picks up whichever annotation is first in z-order, as before.
 - A very small Rectangle (inside narrower than twice the band) is all border, so every click on it picks it up. This matches how it looks.
