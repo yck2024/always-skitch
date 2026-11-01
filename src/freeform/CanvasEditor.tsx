@@ -21,6 +21,7 @@ import { DEFAULT_WEIGHT } from '../weights';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
+import { absoluteBoundingRect, toAbsoluteObject } from '../utils/absoluteTransform';
 import { extractDominantColor } from './utils/extractDominantColor';
 
 // Fabric v7 changed the default origin to 'center'; Skitch already resets this
@@ -322,16 +323,23 @@ function freeformObjects(canvas: Canvas): FabricObject[] {
 // the viewport edge OR at the export PNG boundary. Returns {left, top, right,
 // bottom}. Centralizing here means a future tweak to SHADOW_EXTENT can't drift
 // between the two call sites.
+//
+// The base rect comes from absoluteBoundingRect (Fabric's getBoundingRect), so
+// it is the true axis-aligned box of a ROTATED annotation (#37) and stays in
+// absolute scene coordinates while the object sits inside an ActiveSelection
+// (#34) — raw left/top are group-relative then. For an unrotated object
+// outside a selection it equals left/top + getScaledWidth/Height.
 function objectBoundsWithShadow(object: FabricObject): {
   left: number;
   top: number;
   right: number;
   bottom: number;
 } {
-  const left = object.left ?? 0;
-  const top = object.top ?? 0;
-  const right = left + (object.getScaledWidth?.() ?? object.width ?? 0);
-  const bottom = top + (object.getScaledHeight?.() ?? object.height ?? 0);
+  const rect = absoluteBoundingRect(object);
+  const left = rect.left;
+  const top = rect.top;
+  const right = rect.left + rect.width;
+  const bottom = rect.top + rect.height;
   if ((object as TaggedObject).data?.kind === 'image') {
     // Shadow expansion first, then the hairline stroke (#11 follow-up). Stroke
     // is a tiny extra 1px per side but matters at the exported PNG boundary —
@@ -427,8 +435,10 @@ function applyImageInteractionDefaults(image: FabricObject) {
 // flags round-trip through history restore. `data` carries our kind tag. The
 // per-Image `_controlsVisibility` settings are NOT serialized by Fabric, so
 // `restoreHistory` reapplies them via `applyImageInteractionDefaults`.
+// toAbsoluteObject keeps snapshots in absolute coordinates even while an
+// ActiveSelection is live (group move/resize/rotate, multi-select recolor).
 function serializeAll(canvas: Canvas): string {
-  return JSON.stringify(canvas.getObjects().map((object) => object.toObject(['data', 'selectable', 'evented'])));
+  return JSON.stringify(canvas.getObjects().map((object) => toAbsoluteObject(object, ['data', 'selectable', 'evented'])));
 }
 
 // Compute the right-edge X of the rightmost Image currently on the canvas.
@@ -441,7 +451,9 @@ function nextImageLeft(canvas: Canvas): number {
   if (images.length === 0) return 0;
   let maxRight = 0;
   for (const image of images) {
-    const right = (image.left ?? 0) + (image.getScaledWidth?.() ?? image.width ?? 0);
+    // Absolute even when the Image is part of a live multi-selection.
+    const rect = absoluteBoundingRect(image);
+    const right = rect.left + rect.width;
     if (right > maxRight) maxRight = right;
   }
   return maxRight + PASTE_GAP;
@@ -2016,19 +2028,11 @@ export const FreeformCanvasEditor = forwardRef<FreeformCanvasEditorHandle, Canva
               reselect.push(object);
             }
           }
-          // Refit and snapshot BEFORE re-selecting. Both read each object's
-          // own left/top — fitCanvasToViewport via objectBoundsWithShadow,
-          // saveHistorySnapshot via serializeAll -> toObject — and those turn
-          // group-relative the instant an ActiveSelection wraps 2+ members
-          // again (Fabric shifts each member by -groupCenter). Acting now,
-          // while discardActiveObject left everything in absolute coords, is
-          // what keeps it correct: snapshotting after the re-selection would
-          // bake group-relative positions into history, and restoreHistory
-          // would later enliven them as absolute — jumping every object to the
-          // origin on undo/redo — while refitting after would union the
-          // selected objects' group-relative bounds with the unselected ones'
-          // absolute bounds and mis-frame the viewport. This is the same
-          // serialize-before-reselect ordering Skitch's reweightSelected uses.
+          // Refit and snapshot while the selection is discarded. Both helpers
+          // are absolute even inside an ActiveSelection (objectBoundsWithShadow
+          // uses getBoundingRect, serializeAll uses toAbsoluteObject), so this
+          // order is no longer load-bearing for positions; it simply measures
+          // and snapshots the plain, unwrapped objects.
           //
           // Unlike recolor, a reweight changes geometry: a thicker stroke grows
           // the content bbox slightly (objectBoundsWithShadow adds strokeWidth /

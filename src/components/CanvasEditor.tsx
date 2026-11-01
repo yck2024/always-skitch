@@ -20,6 +20,7 @@ import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
 import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
+import { toAbsoluteObject } from '../utils/absoluteTransform';
 
 // Fabric v7 changed the default origin to 'center'; this app's positioning math
 // (background image at 0,0, drag-rect from start corner, callout offsets, etc.)
@@ -65,8 +66,11 @@ function annotationObjects(canvas: Canvas) {
   return canvas.getObjects().filter((object) => (object as FabricObject & { data?: { kind?: string } }).data?.kind !== 'background');
 }
 
+// Snapshots are always taken in absolute coordinates, even while an
+// ActiveSelection is live (group move/resize/rotate via object:modified, or a
+// recolor of a multi-selection) — see toAbsoluteObject.
 function serializeAnnotations(canvas: Canvas): HistoryState {
-  return JSON.stringify(annotationObjects(canvas).map((object) => object.toObject(['data'])));
+  return JSON.stringify(annotationObjects(canvas).map((object) => toAbsoluteObject(object, ['data'])));
 }
 
 function makeBackground(image: FabricImage) {
@@ -252,7 +256,18 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
   const activeWeightRef = useRef(activeWeight);
   const historyRef = useRef<HistoryState[]>(['[]']);
   const historyIndexRef = useRef(0);
+  // `restoringRef` suppresses saveHistory while a restore is mutating the
+  // canvas. Only the most recent restore clears it, so a stale one bailing
+  // out never reopens the gate under a newer restore still in flight.
   const restoringRef = useRef(false);
+  // Rapid Undo/Redo (fast key-repeat) can start a new restore while an older
+  // one is still awaiting util.enlivenObjects. Ported from Freeform: undo and
+  // redo queue their restores so they run one at a time, and each restore
+  // captures a sequence number and bails after its await if a newer restore
+  // has started. Without both, overlapping restores each add their objects
+  // and the next save persists the duplicates.
+  const restoreSeqRef = useRef(0);
+  const restoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const displayScaleRef = useRef(1);
 
   const fitCanvasToViewport = () => {
@@ -624,14 +639,31 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     const canvas = canvasRef.current;
     if (!canvas) return;
     restoringRef.current = true;
+    restoreSeqRef.current += 1;
+    const mySeq = restoreSeqRef.current;
     annotationObjects(canvas).forEach((object) => canvas.remove(object));
     const parsed = JSON.parse(state) as Record<string, unknown>[];
     const objects = await util.enlivenObjects(parsed);
+    // A newer restore started while we awaited: it owns the final state, so
+    // add nothing and leave restoringRef set for it to clear.
+    if (mySeq !== restoreSeqRef.current) return;
     objects.forEach((object) => canvas.add(object as FabricObject));
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     restoringRef.current = false;
     onHistoryChange(historyIndexRef.current > 0, historyIndexRef.current < historyRef.current.length - 1);
+  };
+
+  // Run restores one at a time, in the order Undo/Redo were pressed. The
+  // state is read when the key is pressed, so a burst of presses walks the
+  // history exactly once per press. `.then(noop, noop)` keeps the chain alive
+  // if a restore rejects.
+  const queueRestore = (state: HistoryState) => {
+    const next = restoreQueueRef.current.then(() => restoreHistory(state));
+    restoreQueueRef.current = next.then(
+      () => undefined,
+      () => undefined,
+    );
   };
 
   const exportDataUrl = () => {
@@ -648,12 +680,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
     undo: () => {
       if (historyIndexRef.current <= 0) return;
       historyIndexRef.current -= 1;
-      void restoreHistory(historyRef.current[historyIndexRef.current]);
+      queueRestore(historyRef.current[historyIndexRef.current]);
     },
     redo: () => {
       if (historyIndexRef.current >= historyRef.current.length - 1) return;
       historyIndexRef.current += 1;
-      void restoreHistory(historyRef.current[historyIndexRef.current]);
+      queueRestore(historyRef.current[historyIndexRef.current]);
     },
     deleteSelected: () => {
       const canvas = canvasRef.current;
@@ -742,10 +774,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         // skip them (recolorSelected's behavior), but keep them selected.
         return object;
       });
-      // Serialize BEFORE re-selecting: serializeAnnotations reads each
-      // object's own left/top, which turn group-relative the moment an
-      // ActiveSelection wraps them again — snapshotting now keeps history
-      // states in absolute coordinates.
+      // Serialize while the selection is discarded. serializeAnnotations is
+      // absolute even inside an ActiveSelection (toAbsoluteObject), so this
+      // order is no longer load-bearing for positions; it simply snapshots
+      // the plain, unwrapped objects.
       const next = serializeAnnotations(canvas);
       if (next !== historyRef.current[historyIndexRef.current]) {
         historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1).concat(next);
