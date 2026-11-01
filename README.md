@@ -10,7 +10,7 @@ Mini Skitch is a static, browser-only image annotation app for quick screenshot 
 4. Add thick red arrows, rectangles, editable text, numbered callouts, and pixelated blur rectangles.
 5. Copy the final PNG back to the clipboard or download `mini-skitch-annotated.png`.
 
-Everything happens locally in the browser. The built app is only static HTML, CSS, and JavaScript, so it can be hosted directly on GitHub Pages. There is no backend, login, analytics, cloud upload, server-side storage, or screenshot-capture service.
+Everything happens locally in the browser. The built app is only static HTML, CSS, and JavaScript, so it can be hosted directly on GitHub Pages. There is no backend, login, cloud upload, server-side storage, or screenshot-capture service. The page does load Google Analytics to count visits, but your screenshots and annotations stay in the browser and are not uploaded.
 
 ## Keyboard shortcuts
 
