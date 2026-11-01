@@ -16,6 +16,7 @@ import {
   Triangle,
   util,
 } from 'fabric';
+import type { TOriginX, TOriginY } from 'fabric';
 import type { Tool } from '../types';
 import { hexToLowAlpha, recolorAnnotation } from '../utils/colors';
 import { copyPngDataUrlToClipboard, downloadDataUrl } from '../utils/export';
@@ -26,6 +27,10 @@ import { HIT_TOLERANCE_PX, annotationContainsPoint } from '../utils/hitTest';
 // assumes 'left'/'top'. Restore the v6 default globally.
 FabricObject.ownDefaults.originX = 'left';
 FabricObject.ownDefaults.originY = 'top';
+// Fabric lets a handle dragged past the opposite edge flip the object (mirrored
+// Step digit, backwards text). Lock that globally: the drag just stops at the
+// opposite edge instead.
+FabricObject.ownDefaults.lockScalingFlip = true;
 
 const FONT_FAMILY = '"Arial Rounded MT Bold", Arial, Helvetica, system-ui, sans-serif';
 const FONT_SIZE = 32;
@@ -59,6 +64,56 @@ export interface CanvasEditorHandle {
   downloadPng: () => void;
   recolorSelected: (color: string) => void;
   reweightSelected: (weight: number) => void;
+}
+
+type KindedObject = FabricObject & { data?: { kind?: string } };
+const kindOf = (object: FabricObject | undefined) => (object as KindedObject | undefined)?.data?.kind;
+
+// A Rectangle's stroke must stay at its Line weight when the Rectangle is
+// resized. Fabric resizes by scaling, which stretches the stroke unevenly and
+// smears the rounded corners, so fold the scale into width/height and reset it
+// to 1. The outer box (which includes the stroke) is kept exactly as dragged:
+// (width + stroke) * scale = (width' + stroke). strokeWidth and rx/ry are left
+// alone, so the weight and the corner radius stay what they were.
+function bakeRectangleScale(rect: FabricObject) {
+  const scaleX = rect.scaleX ?? 1;
+  const scaleY = rect.scaleY ?? 1;
+  if (scaleX === 1 && scaleY === 1) return;
+  const stroke = rect.strokeWidth ?? 0;
+  rect.set({
+    width: Math.max(0, ((rect.width ?? 0) + stroke) * scaleX - stroke),
+    height: Math.max(0, ((rect.height ?? 0) + stroke) * scaleY - stroke),
+    scaleX: 1,
+    scaleY: 1,
+  });
+  rect.setCoords();
+}
+
+// A Step is a circle, so it may only scale uniformly. Corner drags are
+// proportional already, but Shift toggles that off, so average the two scales
+// and put the anchored corner back where Fabric held it.
+function keepStepCircular(step: FabricObject, transform?: { originX: TOriginX; originY: TOriginY }) {
+  const scaleX = step.scaleX ?? 1;
+  const scaleY = step.scaleY ?? 1;
+  if (Math.abs(scaleX - scaleY) < 1e-6) return;
+  const anchor = transform
+    ? step.translateToOriginPoint(step.getRelativeCenterPoint(), transform.originX, transform.originY)
+    : undefined;
+  const scale = (scaleX + scaleY) / 2;
+  step.set({ scaleX: scale, scaleY: scale });
+  if (anchor && transform) step.setPositionByOrigin(anchor, transform.originX, transform.originY);
+  step.setCoords();
+}
+
+// Steps hide the side handles (they would stretch the circle into an oval).
+// `_controlsVisibility` is not serialized, so a Step restored by undo/redo
+// comes back with all handles; re-apply on every selection instead.
+function hideStepSideHandles(canvas: Canvas) {
+  const active = canvas.getActiveObject();
+  if (!active) return;
+  const members = active instanceof ActiveSelection ? active.getObjects() : [active];
+  if (!members.some((object) => kindOf(object) === 'callout')) return;
+  active.setControlsVisibility({ ml: false, mr: false, mt: false, mb: false });
 }
 
 function annotationObjects(canvas: Canvas) {
@@ -576,8 +631,36 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         handleCanvasClick(event);
       }
     });
+    // Resize hooks (#38, #41). Live, so the stroke never looks stretched and
+    // a Step never looks like an oval while the handle is being dragged...
+    canvas.on('object:scaling', (event) => {
+      const kind = kindOf(event.target);
+      if (kind === 'rectangle') bakeRectangleScale(event.target);
+      else if (kind === 'callout') keepStepCircular(event.target, event.transform);
+    });
+    // ...and once more on release, which also covers Rectangles resized as part
+    // of a multi-selection (their scale only becomes their own after the
+    // selection is dropped). Registered BEFORE saveHistory so the snapshot
+    // already holds the baked geometry.
+    canvas.on('object:modified', (event) => {
+      const target = event.target;
+      if (target instanceof ActiveSelection) {
+        const members = target.getObjects();
+        if (!members.some((object) => kindOf(object) === 'rectangle')) return;
+        canvas.discardActiveObject();
+        members.forEach((object) => {
+          if (kindOf(object) === 'rectangle') bakeRectangleScale(object);
+        });
+        canvas.setActiveObject(new ActiveSelection(members, { canvas }));
+      } else if (kindOf(target) === 'rectangle') {
+        bakeRectangleScale(target);
+      }
+    });
     canvas.on('object:modified', saveHistory);
     canvas.on('text:changed', saveHistory);
+    const syncStepHandles = () => hideStepSideHandles(canvas);
+    canvas.on('selection:created', syncStepHandles);
+    canvas.on('selection:updated', syncStepHandles);
 
     return () => {
       canvas.dispose();
