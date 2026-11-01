@@ -286,25 +286,52 @@ interface Bounds {
 // that leaves at least `minVisible` scene units of EVERY annotation inside the
 // Background rect, never more than the annotation's own size. Clamps rather
 // than deletes. If the members cannot all satisfy the rule at once (a
-// selection spread wider than the image) it leaves the position alone.
+// selection spread wider than the image) it keeps at least one member visible.
 function keepOnImage(target: FabricObject, image: { width: number; height: number }, minVisible: number) {
   const members = target instanceof ActiveSelection ? target.getObjects() : [target];
+  const bounds = members.map((member) => {
+    member.setCoords();
+    const box: Bounds = member.getBoundingRect();
+    return {
+      box,
+      visibleX: Math.min(minVisible, box.width, image.width),
+      visibleY: Math.min(minVisible, box.height, image.height),
+    };
+  });
   let minDx = -Infinity;
   let maxDx = Infinity;
   let minDy = -Infinity;
   let maxDy = Infinity;
-  members.forEach((member) => {
-    member.setCoords();
-    const box: Bounds = member.getBoundingRect();
-    const visibleX = Math.min(minVisible, box.width, image.width);
-    const visibleY = Math.min(minVisible, box.height, image.height);
+  bounds.forEach(({ box, visibleX, visibleY }) => {
     minDx = Math.max(minDx, visibleX - (box.left + box.width));
     maxDx = Math.min(maxDx, image.width - visibleX - box.left);
     minDy = Math.max(minDy, visibleY - (box.top + box.height));
     maxDy = Math.min(maxDy, image.height - visibleY - box.top);
   });
-  const dx = minDx <= maxDx ? Math.min(Math.max(0, minDx), maxDx) : 0;
-  const dy = minDy <= maxDy ? Math.min(Math.max(0, minDy), maxDy) : 0;
+  let dx: number;
+  let dy: number;
+  if (minDx <= maxDx && minDy <= maxDy) {
+    dx = Math.min(Math.max(0, minDx), maxDx);
+    dy = Math.min(Math.max(0, minDy), maxDy);
+  } else {
+    let nearestDistance = Infinity;
+    dx = 0;
+    dy = 0;
+    bounds.forEach(({ box, visibleX, visibleY }) => {
+      const memberMinDx = visibleX - (box.left + box.width);
+      const memberMaxDx = image.width - visibleX - box.left;
+      const memberMinDy = visibleY - (box.top + box.height);
+      const memberMaxDy = image.height - visibleY - box.top;
+      const memberDx = Math.min(Math.max(0, memberMinDx), memberMaxDx);
+      const memberDy = Math.min(Math.max(0, memberMinDy), memberMaxDy);
+      const distance = memberDx ** 2 + memberDy ** 2;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        dx = memberDx;
+        dy = memberDy;
+      }
+    });
+  }
   if (dx === 0 && dy === 0) return false;
   target.set({ left: (target.left ?? 0) + dx, top: (target.top ?? 0) + dy });
   target.setCoords();
@@ -686,6 +713,10 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(fu
         }
 
         const text = makeText(color, scale, pointer.x, pointer.y);
+        const image = backgroundElementRef.current;
+        if (image) {
+          keepOnImage(text, { width: image.naturalWidth, height: image.naturalHeight }, MIN_VISIBLE_PX / Math.max(displayScaleRef.current, 1e-6));
+        }
         addFinalObject(text);
         text.enterEditing();
         text.selectAll();
