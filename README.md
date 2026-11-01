@@ -82,9 +82,6 @@ https://skitch.kengblog.com/
 The domain's DNS record is a `CNAME` pointing at `yck2024.github.io` (DNS only, not proxied), and the custom domain is set under **Settings → Pages**. The origin matters: browser storage (for example saved History) belongs to the site's origin, so keep the address stable.
 
 The recommended deployment is GitHub Actions. The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
-This app uses Vite with `base: '/'` and is served from the root of `skitch.kengblog.com`.
-
-The repository includes `.github/workflows/deploy-pages.yml`, which builds the static app and deploys the generated `dist/` directory to GitHub Pages when you push to `main`. To use it:
 
 1. Push this repository to GitHub.
 2. In GitHub, open **Settings → Pages**.
